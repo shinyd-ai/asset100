@@ -1,0 +1,117 @@
+{% extends "base.html" %}
+{% block title %}부동산{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+  <h2 class="fw-bold mb-0"><i class="bi bi-house-door me-2 text-success"></i>부동산</h2>
+</div>
+
+<ul class="nav nav-tabs mb-3">
+  <li class="nav-item"><a class="nav-link active" data-bs-toggle="tab" href="#tab-residence">거주지 (전/월세)</a></li>
+  <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#tab-re">보유 부동산</a></li>
+</ul>
+
+<div class="tab-content">
+  <!-- 거주지 탭 -->
+  <div class="tab-pane fade show active" id="tab-residence">
+    <div class="d-flex justify-content-end mb-3">
+      <button class="btn btn-success btn-sm" onclick="resGrid.addRow()">
+        <i class="bi bi-plus-lg me-1"></i>거주지 추가
+      </button>
+    </div>
+    <div class="card border-0 shadow-sm">
+      <div class="card-body p-0">
+        <div class="table-responsive">
+          <table class="table table-hover mb-0" id="resTable">
+            <thead class="table-light">
+              <tr>
+                <th>주소</th>
+                <th class="text-end">보증금</th>
+                <th class="text-end">월세</th>
+                <th class="text-end">관리비</th>
+                <th>시작일</th><th>종료일</th>
+                <th class="text-center">삭제</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 보유 부동산 탭 -->
+  <div class="tab-pane fade" id="tab-re">
+    <div class="d-flex justify-content-between align-items-center mb-3">
+      <span class="text-muted small">총 평가액: <strong id="re-total" class="text-success">-</strong></span>
+      <button class="btn btn-success btn-sm" onclick="reGrid.addRow()">
+        <i class="bi bi-plus-lg me-1"></i>부동산 추가
+      </button>
+    </div>
+    <div class="card border-0 shadow-sm">
+      <div class="card-body p-0">
+        <div class="table-responsive">
+          <table class="table table-hover mb-0" id="reTable">
+            <thead class="table-light">
+              <tr>
+                <th>이름</th><th>유형</th><th>취득일</th>
+                <th class="text-end">취득가</th><th class="text-end">현재가</th>
+                <th>메모</th>
+                <th class="text-end">평가손익</th>
+                <th class="text-center">삭제</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const resGrid = new GridTable({
+  tableId: 'resTable',
+  columns: [
+    { key: 'address',     type: 'text' },
+    { key: 'deposit',     type: 'number', align: 'end', render: v => fmt(v) + '원' },
+    { key: 'monthly_rent', type: 'number', align: 'end', render: v => fmt(v) + '원' },
+    { key: 'maintenance', type: 'number', align: 'end', render: v => fmt(v) + '원' },
+    { key: 'start_date',  type: 'date' },
+    { key: 'end_date',    type: 'date' },
+  ],
+  apiUrl: '/api/residence',
+});
+
+const reGrid = new GridTable({
+  tableId: 'reTable',
+  columns: [
+    { key: 'name',           type: 'text' },
+    { key: 're_type',        type: 'select',
+      options: ['아파트','빌라','오피스텔','상가','토지','기타'],
+      render: v => v ? `<span class="badge bg-success-subtle text-success">${v}</span>` : '-' },
+    { key: 'purchase_date',  type: 'date' },
+    { key: 'purchase_price', type: 'number', align: 'end', render: v => fmt(v) + '원' },
+    { key: 'current_price',  type: 'number', align: 'end', render: v => fmt(v) + '원' },
+    { key: 'memo',           type: 'text' },
+    { key: '_gain', type: 'computed', align: 'end',
+      compute: r => {
+        const gain = r.current_price - r.purchase_price;
+        const pct  = r.purchase_price ? (gain / r.purchase_price * 100).toFixed(1) : 0;
+        const cls  = gain >= 0 ? 'text-danger' : 'text-primary';
+        return `<span class="${cls} fw-semibold">${gain >= 0 ? '+' : ''}${fmt(gain)}원 (${gain >= 0 ? '+' : ''}${pct}%)</span>`;
+      }},
+  ],
+  apiUrl: '/api/real-estate',
+  onLoad: rows => {
+    const total = rows.reduce((s, r) => s + r.current_price, 0);
+    document.getElementById('re-total').textContent = fmt(total) + '원';
+  },
+});
+
+resGrid.load();
+reGrid.load();
+</script>
+{% endblock %}
