@@ -152,9 +152,9 @@
           <table class="table table-hover mb-0" id="rulesTable">
             <thead class="table-light">
               <tr>
-                <th>키워드</th>
-                <th>카테고리</th>
-                <th class="text-center">삭제</th>
+                <th style="width: 55%">키워드</th>
+                <th style="width: 35%">카테고리</th>
+                <th class="text-center" style="width: 10%">삭제</th>
               </tr>
             </thead>
             <tbody></tbody>
@@ -178,7 +178,10 @@
           <div class="card-body p-0">
             <table class="table table-hover mb-0" id="catTable">
               <thead class="table-light">
-                <tr><th>카테고리명</th><th class="text-center">삭제</th></tr>
+                <tr>
+                  <th style="width: 85%">카테고리명</th>
+                  <th class="text-center" style="width: 15%">삭제</th>
+                </tr>
               </thead>
               <tbody></tbody>
             </table>
@@ -232,13 +235,19 @@
         <div class="card border-0 shadow-sm">
           <div class="card-body p-0">
             <div class="table-responsive">
-              <table class="table table-hover mb-0" id="txTable">
+              <table class="table table-hover mb-0" id="txTable" style="table-layout: fixed; min-width: 1000px">
                 <thead class="table-light">
                   <tr>
-                    <th class="text-center"><input type="checkbox" class="form-check-input cb-all" onchange="txGrid.selectAll(this.checked)"></th>
-                    <th>날짜</th><th>카드</th><th>가맹점</th><th>카테고리</th><th>자금 그룹</th>
-                    <th class="text-end">금액</th><th>할부</th><th>메모</th>
-                    <th class="text-center">삭제</th>
+                    <th style="width: 44px" class="text-center"><input type="checkbox" class="form-check-input cb-all" onchange="txGrid.selectAll(this.checked)"></th>
+                    <th style="width: 110px" class="th-filter" data-key="date">날짜 <i class="bi bi-filter filter-icon"></i></th>
+                    <th style="width: 120px" class="th-filter" data-key="card_id">카드 <i class="bi bi-filter filter-icon"></i></th>
+                    <th style="width: 18%" class="th-filter" data-key="name">가맹점 <i class="bi bi-filter filter-icon"></i></th>
+                    <th style="width: 120px" class="th-filter" data-key="category">카테고리 <i class="bi bi-filter filter-icon"></i></th>
+                    <th style="width: 120px" class="th-filter" data-key="fund_group_id">자금 그룹 <i class="bi bi-filter filter-icon"></i></th>
+                    <th style="width: 110px" class="text-end">금액</th>
+                    <th style="width: 80px">할부</th>
+                    <th>메모</th>
+                    <th style="width: 100px" class="text-center">삭제</th>
                   </tr>
                 </thead>
                 <tbody></tbody>

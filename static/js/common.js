@@ -41,9 +41,11 @@ class GridTable {
     this.selectable       = selectable       || false;
     this.selected         = new Set();
     this.onSelectChange   = onSelectChange   || null;
+    this.filters          = {}; // { key: Set(selected_values) }
     this._tr    = null;   // editing <tr>
     this._keyFn = null;
     this.rows   = [];
+    this.visibleRows = [];
     this._ncols = columns.length + 1 + (this.selectable ? 1 : 0);
 
     // event delegation
@@ -67,18 +69,31 @@ class GridTable {
       if (tr && tr !== this._tr) this.startEdit(tr);
     });
 
-    // click outside → cancel (이벤트 버블링으로 인한 즉시 취소 방지)
+    // 헤더 필터 이벤트
+    this.tableEl.querySelector('thead').addEventListener('click', e => {
+      const th = e.target.closest('.th-filter');
+      if (th) {
+        e.stopPropagation();
+        this._toggleFilterPopup(th);
+      }
+    });
+
+    // click outside → cancel / close popup
     this._ignoreDocClick = false;
     document.addEventListener('click', e => {
       if (this._ignoreDocClick) return;
       if (this._tr && !this.tableEl.contains(e.target)) this.cancelEdit();
+      
+      // 필터 팝업 닫기
+      if (!e.target.closest('.filter-popup') && !e.target.closest('.th-filter')) {
+        this.tableEl.querySelectorAll('.filter-popup').forEach(p => p.classList.remove('show'));
+      }
     });
   }
 
   async load() {
     const qs   = this.getQueryParams();
     const data = await fetchJSON(this.apiUrl + (qs ? '?' + qs : ''));
-    // {rows, total, ...} 형태와 기존 배열 형태 모두 지원
     if (Array.isArray(data)) {
       this.rows = data;
       this.meta = {};
@@ -86,6 +101,7 @@ class GridTable {
       this.rows = data?.rows || [];
       this.meta = data || {};
     }
+    this.filters = {}; // 로드 시 필터 초기화
     this._renderAll();
     this.onLoad?.(this.rows, this.meta);
   }
@@ -93,10 +109,130 @@ class GridTable {
   _renderAll() {
     this._tr = null;
     if (this.selectable) this.selected.clear();
-    this.tbody.innerHTML = this.rows.length
-      ? this.rows.map(r => this._viewHtml(r)).join('')
+    
+    // 필터링 적용
+    this.visibleRows = this.rows.filter(r => {
+      for (const key in this.filters) {
+        const selected = this.filters[key];
+        if (selected.size > 0) {
+          const col = this.columns.find(c => c.key === key);
+          let val = (col?.type === 'computed' ? col.compute(r) : r[key]) ?? '';
+          if (col?.render && col.type !== 'computed') val = col.render(val, r);
+          // HTML 태그 제거 후 비교
+          const cleanVal = String(val).replace(/<[^>]*>/g, '').trim() || '-';
+          if (!selected.has(cleanVal)) return false;
+        }
+      }
+      return true;
+    });
+
+    this.tbody.innerHTML = this.visibleRows.length
+      ? this.visibleRows.map(r => this._viewHtml(r)).join('')
       : `<tr><td colspan="${this._ncols}" class="text-center text-muted py-4">데이터가 없습니다.</td></tr>`;
+    
     if (this.selectable) this._updateSelectAll();
+    
+    // 필터링된 결과로 요약 정보 갱신 (onLoad 재호출 효과)
+    if (this.rows.length !== this.visibleRows.length) {
+      const filteredMeta = { ...this.meta };
+      filteredMeta.total = this.visibleRows.reduce((sum, r) => sum + (r.amount || 0), 0);
+      this.onLoad?.(this.visibleRows, filteredMeta);
+    }
+    this._updateFilterIcons();
+  }
+
+  _updateFilterIcons() {
+    this.tableEl.querySelectorAll('.th-filter').forEach(th => {
+      const key = th.dataset.key;
+      const icon = th.querySelector('.filter-icon');
+      if (this.filters[key] && this.filters[key].size > 0) icon.classList.add('active');
+      else icon.classList.remove('active');
+    });
+  }
+
+  _toggleFilterPopup(th) {
+    const key = th.dataset.key;
+    let popup = th.querySelector('.filter-popup');
+    
+    if (!popup) {
+      popup = document.createElement('div');
+      popup.className = 'filter-popup';
+      th.appendChild(popup);
+    }
+    
+    const isShowing = popup.classList.contains('show');
+    this.tableEl.querySelectorAll('.filter-popup').forEach(p => p.classList.remove('show'));
+    if (isShowing) return;
+
+    // 데이터 추출
+    const col = this.columns.find(c => c.key === key);
+    const allUnique = [...new Set(this.rows.map(r => {
+      let v = (col.type === 'computed' ? col.compute(r) : r[key]) ?? '';
+      if (col.render && col.type !== 'computed') v = col.render(v, r);
+      return String(v).replace(/<[^>]*>/g, '').trim() || '-';
+    }))].sort();
+
+    const selected = this.filters[key] || new Set();
+
+    popup.innerHTML = `
+      <div class="filter-header">
+        <input type="text" class="form-control form-control-sm filter-search" placeholder="검색...">
+      </div>
+      <div class="filter-body">
+        <label class="filter-item border-bottom mb-1">
+          <input type="checkbox" class="filter-all" ${selected.size === 0 ? 'checked' : ''}> <span>(전체 선택)</span>
+        </label>
+        ${allUnique.map(v => `
+          <label class="filter-item">
+            <input type="checkbox" class="filter-opt" value="${v}" ${selected.has(v) || selected.size === 0 ? 'checked' : ''}>
+            <span>${v}</span>
+          </label>
+        `).join('')}
+      </div>
+      <div class="filter-footer">
+        <button class="btn btn-sm btn-outline-secondary filter-clear" style="font-size:0.7rem">초기화</button>
+        <button class="btn btn-sm btn-primary filter-apply" style="font-size:0.7rem">적용</button>
+      </div>
+    `;
+
+    popup.classList.add('show');
+
+    // 팝업 내부 클릭이 밖으로 퍼져서 팝업이 닫히거나 다른 이벤트가 발생하는 것을 방지
+    popup.addEventListener('click', e => e.stopPropagation());
+
+    // 내부 이벤트
+    const body = popup.querySelector('.filter-body');
+    const search = popup.querySelector('.filter-search');
+    search.focus();
+    search.addEventListener('input', () => {
+      const q = search.value.toLowerCase();
+      body.querySelectorAll('.filter-item').forEach(item => {
+        if (item.classList.contains('border-bottom')) return;
+        const txt = item.textContent.toLowerCase();
+        item.style.display = txt.includes(q) ? 'flex' : 'none';
+      });
+    });
+
+    popup.querySelector('.filter-all').addEventListener('change', e => {
+      body.querySelectorAll('.filter-opt').forEach(cb => cb.checked = e.target.checked);
+    });
+
+    popup.querySelector('.filter-clear').addEventListener('click', () => {
+      delete this.filters[key];
+      popup.classList.remove('show');
+      this._renderAll();
+    });
+
+    popup.querySelector('.filter-apply').addEventListener('click', () => {
+      const checked = [...body.querySelectorAll('.filter-opt:checked')].map(cb => cb.value);
+      if (checked.length === allUnique.length) {
+        delete this.filters[key];
+      } else {
+        this.filters[key] = new Set(checked);
+      }
+      popup.classList.remove('show');
+      this._renderAll();
+    });
   }
 
   _toggleSelect(id, checked) {
@@ -171,13 +307,22 @@ class GridTable {
         const t = {text:'text', date:'date'}[col.type] || 'text';
         inp = `<input type="${t}" class="form-control form-control-sm" data-key="${col.key}" value="${v}">`;
       }
-      return `<td>${inp}</td>`;
+      const cls = col.align === 'end' ? ' class="text-end"' : '';
+      return `<td${cls}>${inp}</td>`;
     });
+    
+    // 동작 버튼 열
     cells.push(`<td class="text-center" style="white-space:nowrap">
       <button class="btn btn-sm btn-success py-0 me-1" data-ga="s"><i class="bi bi-check-lg"></i></button>
       <button class="btn btn-sm btn-outline-secondary py-0" data-ga="c"><i class="bi bi-x-lg"></i></button>
     </td>`);
-    return cells.join('');
+    
+    // 체크박스 열 유지 (선택은 불가능하게 disabled)
+    const cbCell = this.selectable
+      ? `<td class="text-center"><input type="checkbox" class="form-check-input" disabled ${this.selected.has(String(r.id)) ? 'checked' : ''}></td>`
+      : '';
+      
+    return `${cbCell}${cells.join('')}`;
   }
 
   startEdit(tr) {
@@ -202,7 +347,11 @@ class GridTable {
     this.onStartEdit?.(tr, r);
     tr.querySelector('input,select')?.focus();
     tr.addEventListener('keydown', this._keyFn = e => {
-      if (e.key === 'Enter' && e.target.tagName !== 'SELECT') { e.preventDefault(); this.saveEdit(); }
+      // 엔터 누르면 저장 (모든 입력창에서 허용)
+      if (e.key === 'Enter') { 
+        e.preventDefault(); 
+        this.saveEdit(); 
+      }
       if (e.key === 'Escape') this.cancelEdit();
     });
     // 이 클릭 이벤트가 document까지 버블링되어 즉시 cancelEdit 되는 것을 방지

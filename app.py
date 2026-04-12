@@ -1588,7 +1588,8 @@ SOURCE_FILES = [
     'templates/pension.html', 'templates/goals.html',
     'templates/monthly.html', 'templates/sync.html',
     'templates/fund_management.html',
-    'static/css/style.css', 'static/js/common.js', 'static/js/dashboard.js',
+    '<link href="/static/css/style.css?v=12" rel="stylesheet">',
+    'static/js/common.js', 'static/js/dashboard.js',
 ]
 
 @app.route('/api/export-source')
