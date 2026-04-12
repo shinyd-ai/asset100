@@ -255,6 +255,9 @@
             </div>
           </div>
           <div class="card-footer bg-white border-top d-flex justify-content-end align-items-center gap-3 py-2">
+            <button id="btn-clear-filter" class="btn btn-xs btn-outline-secondary d-none" onclick="txGrid.resetFilters()" style="font-size:0.75rem">
+              <i class="bi bi-x-circle me-1"></i>필터 초기화
+            </button>
             <span class="text-muted small" id="txCount"></span>
             <span class="fw-bold" id="txTotal"></span>
           </div>
@@ -265,8 +268,9 @@
       <div class="col-lg-4 d-flex flex-column gap-3">
         <!-- 자금 그룹별 지출 -->
         <div class="card border-0 shadow-sm">
-          <div class="card-header bg-white border-0 pt-3 pb-0 fw-semibold">
-            <i class="bi bi-wallet2 me-2 text-warning"></i>자금 그룹별 지출
+          <div class="card-header bg-white border-0 pt-3 pb-0 fw-semibold d-flex justify-content-between align-items-center" style="cursor:pointer" onclick="txGrid.resetFilters()" title="클릭 시 모든 필터 해제">
+            <span><i class="bi bi-wallet2 me-2 text-warning"></i>자금 그룹별 지출</span>
+            <span class="text-muted fw-normal" style="font-size:0.7rem">전체보기 <i class="bi bi-chevron-right"></i></span>
           </div>
           <div class="card-body" id="fundBreakdown">
             <p class="text-muted text-center small mt-3">조회 후 표시됩니다.</p>
@@ -274,8 +278,9 @@
         </div>
         <!-- 카테고리별 지출 -->
         <div class="card border-0 shadow-sm">
-          <div class="card-header bg-white border-0 pt-3 pb-0 fw-semibold">
-            <i class="bi bi-pie-chart me-2 text-info"></i>카테고리별 지출
+          <div class="card-header bg-white border-0 pt-3 pb-0 fw-semibold d-flex justify-content-between align-items-center" style="cursor:pointer" onclick="txGrid.resetFilters()" title="클릭 시 모든 필터 해제">
+            <span><i class="bi bi-pie-chart me-2 text-info"></i>카테고리별 지출</span>
+            <span class="text-muted fw-normal" style="font-size:0.7rem">전체보기 <i class="bi bi-chevron-right"></i></span>
           </div>
           <div class="card-body" id="catBreakdown">
             <p class="text-muted text-center small mt-3">조회 후 표시됩니다.</p>
@@ -375,6 +380,11 @@ const txGrid = new GridTable({
   onLoad: (rows, meta) => {
     document.getElementById('txCount').textContent = `${rows.length}건`;
     document.getElementById('txTotal').textContent = `합계 ${fmt(meta.total ?? 0)}원`;
+    
+    // 필터 활성화 여부에 따라 '필터 초기화' 버튼 표시
+    const hasFilter = Object.values(txGrid.filters).some(s => s.size > 0);
+    document.getElementById('btn-clear-filter').classList.toggle('d-none', !hasFilter);
+    
     renderFundBreakdown(meta.by_fund_group ?? [], meta.total ?? 0);
     renderCatBreakdown(meta.by_category ?? [], meta.total ?? 0);
     updateSelectionUI(new Set());
@@ -453,6 +463,9 @@ async function bulkDelete() {
 // ── 자금 그룹별 지출 사이드패널 ──────────────────────────────
 const FUND_COLORS = ['#E65100','#BF360C','#F57F17','#E64A19','#FF6F00','#6D4C41','#4E342E','#37474F'];
 
+// 자금 그룹 완료 체크 상태 저장 (임시 메모리)
+let doneFundGroups = new Set();
+
 function renderFundBreakdown(byFundGroup, total) {
   const el = document.getElementById('fundBreakdown');
   if (!byFundGroup.length) {
@@ -460,19 +473,39 @@ function renderFundBreakdown(byFundGroup, total) {
     return;
   }
   el.innerHTML = byFundGroup.map((item, i) => {
-    const pct   = total ? Math.round(item.total / total * 100) : 0;
-    const color = FUND_COLORS[i % FUND_COLORS.length];
+    const isDone = doneFundGroups.has(item.name);
+    const pct    = total ? Math.round(item.total / total * 100) : 0;
+    const color  = FUND_COLORS[i % FUND_COLORS.length];
+    
     return `
-      <div class="mb-3" style="cursor:pointer; opacity:0.9" onclick="filterByFundGroup('${item.name}')" onmouseover="this.style.opacity=1" onmouseout="this.style.opacity=0.9">
-        <div class="d-flex justify-content-between mb-1">
-          <span class="small fw-semibold text-primary-emphasis">${item.name}</span>
-          <span class="small text-muted">${fmt(item.total)}원 <span class="text-secondary">(${pct}%)</span></span>
+      <div class="mb-3" style="opacity: ${isDone ? '0.4' : '0.9'}; transition: opacity 0.2s">
+        <div class="d-flex justify-content-between align-items-center mb-1">
+          <div style="cursor:pointer" onclick="filterByFundGroup('${item.name}')" title="상세 내역 필터링">
+            <span class="small fw-semibold ${isDone ? '' : 'text-primary-emphasis'}">${item.name}</span>
+          </div>
+          <div class="d-flex align-items-center gap-2">
+            <span class="small text-muted">${fmt(item.total)}원</span>
+            <i class="bi ${isDone ? 'bi-check-circle-fill text-success' : 'bi-check-circle text-muted'} fs-6" 
+               style="cursor:pointer" 
+               onclick="toggleFundGroupStatus('${item.name}')" 
+               title="${isDone ? '체크 해제' : '입금 완료 체크'}"></i>
+          </div>
         </div>
-        <div class="progress" style="height:6px">
+        <div class="progress" style="height:6px; cursor:pointer" onclick="filterByFundGroup('${item.name}')">
           <div class="progress-bar" style="width:${pct}%;background-color:${color}" role="progressbar"></div>
         </div>
       </div>`;
   }).join('');
+}
+
+function toggleFundGroupStatus(name) {
+  if (doneFundGroups.has(name)) doneFundGroups.delete(name);
+  else doneFundGroups.add(name);
+  
+  // 현재 데이터를 가지고 다시 렌더링 (txGrid에 저장된 메타데이터 활용)
+  if (txGrid.meta && txGrid.meta.by_fund_group) {
+    renderFundBreakdown(txGrid.meta.by_fund_group, txGrid.meta.total);
+  }
 }
 
 function filterByFundGroup(name) {
