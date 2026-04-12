@@ -101,7 +101,6 @@ class GridTable {
       this.rows = data?.rows || [];
       this.meta = data || {};
     }
-    this.filters = {}; // 로드 시 필터 초기화
     this._renderAll();
     this.onLoad?.(this.rows, this.meta);
   }
