@@ -463,16 +463,22 @@ function renderFundBreakdown(byFundGroup, total) {
     const pct   = total ? Math.round(item.total / total * 100) : 0;
     const color = FUND_COLORS[i % FUND_COLORS.length];
     return `
-      <div class="mb-3">
+      <div class="mb-3" style="cursor:pointer; opacity:0.9" onclick="filterByFundGroup('${item.name}')" onmouseover="this.style.opacity=1" onmouseout="this.style.opacity=0.9">
         <div class="d-flex justify-content-between mb-1">
-          <span class="small fw-semibold">${item.name}</span>
+          <span class="small fw-semibold text-primary-emphasis">${item.name}</span>
           <span class="small text-muted">${fmt(item.total)}원 <span class="text-secondary">(${pct}%)</span></span>
         </div>
-        <div class="progress" style="height:8px">
+        <div class="progress" style="height:6px">
           <div class="progress-bar" style="width:${pct}%;background-color:${color}" role="progressbar"></div>
         </div>
       </div>`;
   }).join('');
+}
+
+function filterByFundGroup(name) {
+  txGrid.filters['fund_group_id'] = new Set([name]);
+  txGrid._renderAll();
+  window.scrollTo({ top: document.getElementById('txTable').offsetTop - 100, behavior: 'smooth' });
 }
 
 // ── 카테고리별 지출 사이드패널 ────────────────────────────────
@@ -488,16 +494,22 @@ function renderCatBreakdown(byCategory, total) {
     const pct   = total ? Math.round(item.total / total * 100) : 0;
     const color = CAT_COLORS[i % CAT_COLORS.length];
     return `
-      <div class="mb-3">
+      <div class="mb-3" style="cursor:pointer; opacity:0.9" onclick="filterByCategory('${item.category}')" onmouseover="this.style.opacity=1" onmouseout="this.style.opacity=0.9">
         <div class="d-flex justify-content-between mb-1">
-          <span class="small fw-semibold">${item.category}</span>
+          <span class="small fw-semibold text-primary-emphasis">${item.category}</span>
           <span class="small text-muted">${fmt(item.total)}원 <span class="text-secondary">(${pct}%)</span></span>
         </div>
-        <div class="progress" style="height:8px">
+        <div class="progress" style="height:6px">
           <div class="progress-bar" style="width:${pct}%;background-color:${color}" role="progressbar"></div>
         </div>
       </div>`;
   }).join('');
+}
+
+function filterByCategory(name) {
+  txGrid.filters['category'] = new Set([name]);
+  txGrid._renderAll();
+  window.scrollTo({ top: document.getElementById('txTable').offsetTop - 100, behavior: 'smooth' });
 }
 
 // ── 자금 그룹 자동 매핑 ──────────────────────────────────────

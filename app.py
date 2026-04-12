@@ -260,10 +260,10 @@ def api_card_tx():
         query += " ORDER BY t.date DESC"
         rows = db.execute(query, params).fetchall()
         total = sum(r['amount'] for r in rows)
-        # 카테고리별 집계 (없는 건 → '미분류')
+        # 카테고리별 집계 (없는 건 → '-')
         cat_map = {}
         for r in rows:
-            cat = r['category'] or '미분류'
+            cat = r['category'] or '-'
             cat_map[cat] = cat_map.get(cat, 0) + r['amount']
         by_category = sorted(
             [{'category': c, 'total': t} for c, t in cat_map.items()],
@@ -274,7 +274,7 @@ def api_card_tx():
         fund_map = {}
         for r in rows:
             gid = r['fund_group_id']
-            name = fund_group_names.get(gid, '미지정') if gid else '미지정'
+            name = fund_group_names.get(gid, '-') if gid else '-'
             fund_map[name] = fund_map.get(name, 0) + r['amount']
         by_fund_group = sorted(
             [{'name': n, 'total': t} for n, t in fund_map.items()],
