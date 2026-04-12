@@ -2,7 +2,8 @@ from flask import Flask, render_template, request, jsonify, Response, g
 from flask_cors import CORS
 from database import get_db as database_get_db, init_db, DB_PATH
 from datetime import datetime, date
-import json, os, shutil, sqlite3, re, csv, io
+import json, os, shutil, sqlite3, re, csv, io, requests
+import yfinance as yf
 
 try:
     import openpyxl
@@ -544,6 +545,67 @@ def api_crypto_detail(rid):
     db.execute("DELETE FROM crypto WHERE id = ?", (rid,))
     db.commit()
     return jsonify({'ok': True})
+
+
+# ── API: 투자 자산 실시간 가격 동기화 ────────────────────────
+@app.route('/api/investments/sync-prices', methods=['POST'])
+def api_investments_sync_prices():
+    db = get_db()
+    results = {'stocks': 0, 'etf': 0, 'crypto': 0, 'errors': []}
+
+    # 1. 주식/ETF 동기화 (yfinance)
+    for table in ['stocks', 'etf']:
+        items = db.execute(f"SELECT id, ticker FROM {table} WHERE ticker IS NOT NULL AND ticker != ''").fetchall()
+        for item in items:
+            ticker_raw = item['ticker'].strip()
+            ticker_to_search = ticker_raw
+            
+            # 한국 주식 코드 (6자리 숫자) 처리
+            if re.match(r'^\d{6}$', ticker_raw):
+                # 우선 KOSPI(.KS) 시도 후 실패 시 KOSDAQ(.KQ) 시도 (yfinance 특징)
+                ticker_to_search = ticker_raw + ".KS"
+            
+            try:
+                ticker_obj = yf.Ticker(ticker_to_search)
+                # 최근 데이터 가져오기
+                hist = ticker_obj.history(period='1d')
+                if hist.empty and ticker_to_search.endswith(".KS"):
+                    ticker_to_search = ticker_raw + ".KQ"
+                    ticker_obj = yf.Ticker(ticker_to_search)
+                    hist = ticker_obj.history(period='1d')
+                
+                if not hist.empty:
+                    current_price = int(hist['Close'].iloc[-1])
+                    db.execute(f"UPDATE {table} SET current_price=? WHERE id=?", (current_price, item['id']))
+                    results[table] += 1
+                else:
+                    results['errors'].append(f"{ticker_raw}: 시세를 찾을 수 없음")
+            except Exception as e:
+                results['errors'].append(f"{ticker_raw}: {str(e)}")
+
+    # 2. 코인 동기화 (Upbit)
+    crypto_items = db.execute("SELECT id, symbol FROM crypto WHERE symbol IS NOT NULL AND symbol != ''").fetchall()
+    for item in crypto_items:
+        symbol = item['symbol'].strip().upper()
+        try:
+            # 업비트 원화 마켓 기준
+            res = requests.get(f"https://api.upbit.com/v1/ticker?markets=KRW-{symbol}", timeout=5)
+            if res.status_code == 200:
+                data = res.json()
+                if data:
+                    current_price = float(data[0]['trade_price'])
+                    db.execute("UPDATE crypto SET current_price=? WHERE id=?", (current_price, item['id']))
+                    results['crypto'] += 1
+                else:
+                    results['errors'].append(f"{symbol}: 업비트 원화 마켓에 없음")
+            else:
+                results['errors'].append(f"{symbol}: API 호출 실패")
+        except Exception as e:
+            results['errors'].append(f"{symbol}: {str(e)}")
+
+    db.commit()
+    db.close()
+    return jsonify(results)
 
 
 # ── API: 거주지 ──────────────────────────────────────────────

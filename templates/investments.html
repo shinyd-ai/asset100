@@ -4,6 +4,17 @@
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
   <h2 class="fw-bold mb-0"><i class="bi bi-graph-up-arrow me-2 text-primary"></i>투자 관리</h2>
+  <button id="btn-sync-prices" class="btn btn-primary" onclick="syncPrices()">
+    <i class="bi bi-arrow-clockwise me-1"></i>실시간 가격 업데이트
+  </button>
+</div>
+
+<!-- 로딩 스피너 (초기 비활성) -->
+<div id="sync-loading" class="alert alert-info d-none mb-4">
+  <div class="d-flex align-items-center">
+    <div class="spinner-border spinner-border-sm me-3" role="status"></div>
+    <strong>최신가 정보를 가져오는 중입니다...</strong> (주식, ETF 및 코인 시세를 외부 API에서 불러오고 있습니다)
+  </div>
 </div>
 
 <ul class="nav nav-tabs mb-3" id="investTabs">
@@ -164,6 +175,36 @@ function pnlHtml(v) {
   const cls = v > 0 ? 'text-danger' : v < 0 ? 'text-primary' : 'text-muted';
   return `<span class="${cls} fw-semibold">${v >= 0 ? '+' : ''}${fmt(Math.round(v))}원</span>`;
 }
+async function syncPrices() {
+  const btn = document.getElementById('btn-sync-prices');
+  const loading = document.getElementById('sync-loading');
+  
+  if (!confirm('현재가를 실시간으로 동기화하시겠습니까? (수 초가 소요될 수 있습니다)')) return;
+  
+  btn.disabled = true;
+  loading.classList.remove('d-none');
+  
+  try {
+    const res = await fetch('/api/investments/sync-prices', { method: 'POST' });
+    const data = await res.json();
+    
+    if (res.ok) {
+      alert(`업데이트 완료!\n- 주식: ${data.stocks}건\n- ETF: ${data.etf}건\n- 코인: ${data.crypto}건\n${data.errors.length ? '\n[오류 발생]\n' + data.errors.join('\n') : ''}`);
+      // 그리드 모두 새로고침
+      stockGrid.load();
+      etfGrid.load();
+      cryptoGrid.load();
+    } else {
+      alert('업데이트 중 오류가 발생했습니다.');
+    }
+  } catch (e) {
+    alert('서버와 통신 중 오류가 발생했습니다.');
+  } finally {
+    btn.disabled = false;
+    loading.classList.add('d-none');
+  }
+}
+
 function rateHtml(pct) {
   if (pct == null || isNaN(pct)) return '-';
   const cls = pct > 0 ? 'text-danger' : pct < 0 ? 'text-primary' : 'text-muted';
