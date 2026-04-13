@@ -290,6 +290,47 @@
     </div>
   </div>
 </div>
+
+<!-- 우클릭 컨텍스트 메뉴 -->
+<div id="txContextMenu" class="dropdown-menu shadow-sm border-0" style="display:none; position:fixed; z-index:2000;">
+  <div class="dropdown-header py-2 text-uppercase fw-bold" style="font-size: 0.65rem; color: #adb5bd;">자동 매핑 규칙 등록</div>
+  <a class="dropdown-item py-2" href="#" onclick="openQuickRuleModal('category')">
+    <i class="bi bi-tag-fill me-2 text-info"></i>카테고리 규칙으로 등록...
+  </a>
+  <a class="dropdown-item py-2" href="#" onclick="openQuickRuleModal('fund')">
+    <i class="bi bi-wallet2 me-2 text-warning"></i>자금 그룹 규칙으로 등록...
+  </a>
+</div>
+
+<!-- 규칙 등록 상세 팝업 -->
+<div class="modal fade" id="rulePopModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content border-0 shadow-lg">
+      <div class="modal-header border-0 pb-0">
+        <h5 class="modal-title fw-bold" id="rulePopTitle">규칙 등록</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <div class="mb-3">
+          <label class="form-label small fw-semibold">키워드 (자동 매칭될 텍스트)</label>
+          <input type="text" id="rulePopKeyword" class="form-control" placeholder="키워드를 입력하세요">
+          <div class="form-text mt-1" style="font-size:0.75rem">가맹점명에 이 키워드가 포함되면 자동으로 지정됩니다.</div>
+        </div>
+        <div id="rulePopTargetGroup" class="mb-3">
+          <label class="form-label small fw-semibold" id="rulePopTargetLabel">지정할 대상</label>
+          <select id="rulePopTargetSelect" class="form-select"></select>
+        </div>
+        <div class="alert alert-light border-0 py-2 small mb-0">
+          <i class="bi bi-magic me-1 text-primary"></i>저장 시 이번 달 모든 내역에 마법처럼 자동 적용됩니다.
+        </div>
+      </div>
+      <div class="modal-footer border-0 pt-0">
+        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">취소</button>
+        <button type="button" class="btn btn-primary px-4" onclick="saveQuickRule()">규칙 저장</button>
+      </div>
+    </div>
+  </div>
+</div>
 {% endblock %}
 
 {% block scripts %}
@@ -354,7 +395,15 @@ const txGrid = new GridTable({
     { key: 'card_id',     type: 'select',
       options: () => allCards.map(c => ({ value: String(c.id), label: c.card_name || '카드' + c.card_num })),
       render: (v, row) => row.card_name || '-' },
-    { key: 'name',        type: 'text' },
+    { key: 'name',        type: 'text',
+      render: (v, row) => `
+        <div class="merchant-cell">
+          <span class="text-truncate" title="${v}">${v}</span>
+          <span class="quick-rule-btn" onclick="showRuleMenu(this, '${row.id}')" title="규칙 등록 도우미">
+            <i class="bi bi-magic"></i>
+          </span>
+        </div>`
+    },
     { key: 'category',    type: 'select', options: () => allCategories,
       render: v => v ? `<span class="badge bg-info-subtle text-info">${v}</span>` : '-' },
     { key: 'fund_group_id', type: 'select',
@@ -711,6 +760,107 @@ async function doImport() {
     ${skippedHtml}`;
   document.getElementById('xl-step2').style.display = 'none';
   document.getElementById('xl-step3').style.display = '';
+}
+
+// ── 우클릭 규칙 등록 로직 (호버 버튼 클릭으로 전환) ─────────
+let contextRowData = null;
+let currentRuleType = 'category';
+
+// 가맹점 옆 마법봉 아이콘 클릭 시 메뉴 표시
+function showRuleMenu(btn, rowId) {
+  event.stopPropagation();
+  contextRowData = txGrid.rows.find(r => String(r.id) === rowId);
+  if (!contextRowData) return;
+
+  const menu = document.getElementById('txContextMenu');
+  const rect = btn.getBoundingClientRect();
+  
+  menu.style.display = 'block';
+  // 버튼 오른쪽 하단에 정렬
+  menu.style.left = (rect.right - 220) + 'px'; // 메뉴 너비만큼 왼쪽으로 이동
+  menu.style.top = (rect.bottom + 5) + 'px';
+}
+
+// 메뉴 외 클릭 시 숨기기
+document.addEventListener('click', () => {
+  const menu = document.getElementById('txContextMenu');
+  if (menu) menu.style.display = 'none';
+});
+
+function openQuickRuleModal(type) {
+  currentRuleType = type;
+  const modal = new bootstrap.Modal(document.getElementById('rulePopModal'));
+  const keywordInput = document.getElementById('rulePopKeyword');
+  const targetSelect = document.getElementById('rulePopTargetSelect');
+  const title = document.getElementById('rulePopTitle');
+  
+  keywordInput.value = contextRowData.name;
+  targetSelect.innerHTML = '';
+  
+  if (type === 'category') {
+    title.innerHTML = '<i class="bi bi-tag-fill me-2 text-info"></i>카테고리 규칙 등록';
+    allCategories.forEach(c => {
+      const opt = document.createElement('option');
+      opt.value = c; opt.innerText = c;
+      if (c === contextRowData.category) opt.selected = true;
+      targetSelect.appendChild(opt);
+    });
+  } else {
+    title.innerHTML = '<i class="bi bi-wallet2 me-2 text-warning"></i>자금 그룹 규칙 등록';
+    allFundGroups.forEach(g => {
+      const opt = document.createElement('option');
+      opt.value = g.id; opt.innerText = g.name;
+      if (g.id === contextRowData.fund_group_id) opt.selected = true;
+      targetSelect.appendChild(opt);
+    });
+  }
+  modal.show();
+}
+
+async function saveQuickRule(force = false) {
+  const keyword = document.getElementById('rulePopKeyword').value.trim();
+  const target = document.getElementById('rulePopTargetSelect').value;
+  if (!keyword) { alert('키워드를 입력해 주세요.'); return; }
+
+  const url = currentRuleType === 'category' ? '/api/card-category-rules' : '/api/fund-group-rules';
+  const body = currentRuleType === 'category' 
+    ? { keyword, category: target, force }
+    : { keyword, fund_group_id: parseInt(target), force };
+
+  const res = await fetchJSON(url, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body)
+  });
+
+  if (res.error === 'duplicate') {
+    if (confirm(res.message)) {
+      saveQuickRule(true); // force 재등록
+    }
+  } else if (res.ok) {
+    const modalEl = document.getElementById('rulePopModal');
+    const modalInstance = bootstrap.Modal.getInstance(modalEl);
+    if (modalInstance) modalInstance.hide();
+    
+    // 자동 매핑 즉시 실행
+    await autoMapImmediate();
+    txGrid.load();
+    alert('규칙이 등록되었으며 화면의 내역들에 즉시 적용되었습니다!');
+  } else {
+    alert('오류: ' + (res.error || '저장 실패'));
+  }
+}
+
+async function autoMapImmediate() {
+  const cardId = document.getElementById('txCardFilter').value || null;
+  const year = document.getElementById('txYear').value;
+  const month = document.getElementById('txMonth').value;
+  const payload = { card_id: cardId, year, month };
+  
+  await Promise.all([
+    fetchJSON('/api/card-tx/auto-categorize', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) }),
+    fetchJSON('/api/card-tx/auto-fund-group', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) })
+  ]);
 }
 
 function resetUpload(keepError = false) {

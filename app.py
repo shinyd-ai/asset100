@@ -1406,8 +1406,22 @@ def api_card_category_rules():
         rows = db.execute("SELECT * FROM card_category_rules ORDER BY keyword").fetchall()
         return jsonify(rows_to_list(rows))
     d = request.json or {}
-    db.execute("INSERT INTO card_category_rules (keyword, category) VALUES (?, ?)",
-               (d.get('keyword', ''), d.get('category', '')))
+    keyword  = d.get('keyword', '').strip()
+    category = d.get('category', '').strip()
+    force    = d.get('force', False)
+    
+    if not keyword:
+        return jsonify({'error': '키워드가 필요합니다.'}), 400
+
+    existing = db.execute("SELECT id FROM card_category_rules WHERE keyword=?", (keyword,)).fetchone()
+    if existing and not force:
+        return jsonify({'error': 'duplicate', 'message': f"'{keyword}' 규칙이 이미 존재합니다. 덮어쓸까요?"}), 409
+    
+    if existing:
+        db.execute("UPDATE card_category_rules SET category=? WHERE id=?", (category, existing['id']))
+    else:
+        db.execute("INSERT INTO card_category_rules (keyword, category) VALUES (?, ?)", (keyword, category))
+    
     db.commit(); db.close()
     return jsonify({'ok': True})
 
@@ -1522,8 +1536,22 @@ def api_fund_group_rules():
         ).fetchall()
         return jsonify(rows_to_list(rows))
     d = request.json or {}
-    db.execute("INSERT INTO fund_group_rules (keyword, fund_group_id) VALUES (?, ?)",
-               (d.get('keyword', ''), d.get('fund_group_id')))
+    keyword = d.get('keyword', '').strip()
+    f_gid   = d.get('fund_group_id')
+    force   = d.get('force', False)
+    
+    if not keyword:
+        return jsonify({'error': '키워드가 필요합니다.'}), 400
+
+    existing = db.execute("SELECT id FROM fund_group_rules WHERE keyword=?", (keyword,)).fetchone()
+    if existing and not force:
+        return jsonify({'error': 'duplicate', 'message': f"'{keyword}' 규칙이 이미 존재합니다. 덮어쓸까요?"}), 409
+
+    if existing:
+        db.execute("UPDATE fund_group_rules SET fund_group_id=? WHERE id=?", (f_gid, existing['id']))
+    else:
+        db.execute("INSERT INTO fund_group_rules (keyword, fund_group_id) VALUES (?, ?)", (keyword, f_gid))
+    
     db.commit(); db.close()
     return jsonify({'ok': True}), 201
 
