@@ -1,0 +1,13 @@
+.env
+*.db
+*.db.bak
+__pycache__/
+.pytest_cache/
+*.pyc
+migrate_to_supabase.py
+setup.py
+setup2.py
+check_db.py
+extract.py
+아비/
+scratch/

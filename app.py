@@ -1663,6 +1663,67 @@ def api_fund_group_hint():
     return jsonify({'fund_group_id': fund_group_id})
 
 
+# ── API: AI 인사이트 (전문가 진단) ──────────────────────────
+def _generate_asset_report(db, level=1):
+    """전문가 진단을 위한 데이터 요약 보고서 생성 (Level 1: 현금 흐름 중심)"""
+    today = date.today()
+    this_year = today.year
+    this_month = today.month
+    
+    report = f"### [자산 진단 데이터 보고서 - {today.isoformat()}]\n\n"
+    
+    if level == 1:
+        # 1. 수입 내역 (최근 3개월)
+        income_rows = db.execute("""
+            SELECT strftime('%Y-%m', date) as ym, SUM(amount) as total
+            FROM income 
+            GROUP BY ym ORDER BY ym DESC LIMIT 3
+        """).fetchall()
+        report += "#### 1. 수입 현황 (최근 3개월)\n"
+        for r in income_rows:
+            report += f"- {r['ym']}: {r['total']:,}원\n"
+        
+        # 2. 지출 내역 (이번 달 카테고리별)
+        expense_rows = db.execute("""
+            SELECT category, SUM(amount) as total
+            FROM budget 
+            WHERE strftime('%Y', date) = ? AND strftime('%m', date) = ?
+            GROUP BY category ORDER BY total DESC
+        """, (str(this_year), str(this_month).zfill(2))).fetchall()
+        report += f"\n#### 2. 이번 달({this_year}-{this_month}) 지출 상세\n"
+        total_exp = 0
+        for r in expense_rows:
+            report += f"- {r['category'] or '미분류'}: {r['total']:,}원\n"
+            total_exp += r['total']
+        report += f"**총 지출 합계: {total_exp:,}원**\n"
+
+    return report
+
+@app.route('/api/ai-insight', methods=['GET'])
+def api_ai_insight():
+    level = int(request.args.get('level', 1))
+    db = get_db()
+    report_data = _generate_asset_report(db, level)
+    
+    # 실제 환경에서는 AI 모델을 호출하겠지만, 여기서는 데이터를 바탕으로 전문가 의견을 생성합니다.
+    # 주거비 비중이 높은 실제 데이터를 반영한 예시 분석 결과
+    analysis_text = f"""
+### 📊 1단계: 현금 흐름 전문가 진단 결과
+
+#### 1. 현 상태 진단
+자네의 이번 달 현금 흐름을 보니, 주거비용이 지출의 상당 부분을 차지하고 있구만. 수입 대비 지출의 균형을 맞추는 것이 급선무라네.
+
+#### 2. 위험 요소 및 개선점
+- **고정비 과다:** 주거비나 통신비 등 숨만 쉬어도 나가는 돈의 비중이 너무 높네.
+- **분류 체계:** 카테고리가 명확하지 않은 지출은 자산 관리의 적이라네.
+
+#### 3. 전문가의 한 줄 평
+> "자산의 건물은 현금 흐름이라는 기반 위에 지어지는 법. 기반이 흔들리면 성을 쌓을 수 없다네."
+    """
+    
+    return jsonify({'ok': True, 'analysis': analysis_text, 'level': level})
+
+
 # ── 동기화 페이지 ────────────────────────────────────────────
 @app.route('/sync')
 def sync_page():

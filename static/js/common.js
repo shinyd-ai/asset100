@@ -234,6 +234,11 @@ class GridTable {
     });
   }
 
+  resetFilters() {
+    this.filters = {};
+    this._renderAll();
+  }
+
   _toggleSelect(id, checked) {
     if (checked) this.selected.add(String(id));
     else         this.selected.delete(String(id));

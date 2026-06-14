@@ -417,3 +417,81 @@ body {
 ::-webkit-scrollbar-track { background: #f1f1f1; }
 ::-webkit-scrollbar-thumb { background: #c1c1c1; border-radius: 999px; }
 ::-webkit-scrollbar-thumb:hover { background: #a8a8a8; }
+
+/* ── AI 진단 섹션 ────────────────────────────────────────── */
+.ai-card {
+  background: rgba(255, 255, 255, 0.7);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.3) !important;
+  border-radius: 20px !important;
+  overflow: hidden;
+}
+
+.ai-pulse-icon {
+  width: 50px;
+  height: 50px;
+  background: white;
+  border-radius: 15px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 4px 15px rgba(21, 101, 192, 0.15);
+  position: relative;
+}
+
+.ai-pulse-icon::after {
+  content: '';
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  border-radius: 15px;
+  border: 2px solid #1565C0;
+  animation: ai-pulse 2s infinite;
+  opacity: 0;
+}
+
+@keyframes ai-pulse {
+  0% { transform: scale(1); opacity: 0.5; }
+  100% { transform: scale(1.5); opacity: 0; }
+}
+
+.ai-result-text {
+  line-height: 1.7;
+  font-size: 0.95rem;
+  color: #37352f;
+}
+
+.ai-result-text h3 {
+  font-size: 1.25rem;
+  font-weight: 700;
+  margin-bottom: 1.25rem;
+  color: #1565C0;
+}
+
+.ai-result-text h4 {
+  font-size: 1.05rem;
+  font-weight: 600;
+  margin-top: 1.5rem;
+  margin-bottom: 0.75rem;
+  color: #0D47A1;
+}
+
+.ai-result-text blockquote {
+  border-left: 4px solid #1565C0;
+  padding-left: 1rem;
+  margin: 1.5rem 0;
+  font-style: italic;
+  color: #495057;
+  background: #f8f9ff;
+  padding: 1rem;
+  border-radius: 0 10px 10px 0;
+}
+
+.ai-result-text ul {
+  padding-left: 1.25rem;
+}
+
+.ai-result-text li {
+  margin-bottom: 0.5rem;
+}
