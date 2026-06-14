@@ -1,6 +1,6 @@
 from flask import Flask, render_template, request, jsonify, Response, g
 from flask_cors import CORS
-from database import get_db as database_get_db, init_db, DB_PATH
+from database import get_db as database_get_db, init_db
 from datetime import datetime, date
 import json, os, shutil, sqlite3, re, csv, io, requests
 import yfinance as yf
@@ -1794,30 +1794,12 @@ def api_import_source():
 
 @app.route('/api/export-text')
 def api_export_text():
-    conn = sqlite3.connect(DB_PATH)
-    sql  = '\n'.join(conn.iterdump())
-    conn.close()
-    return jsonify({'sql': sql})
+    return jsonify({'error': 'Cloud DB 환경에서는 지원되지 않습니다.'}), 400
 
 
 @app.route('/api/import-text', methods=['POST'])
 def api_import_text():
-    sql = (request.json or {}).get('sql', '').strip()
-    if not sql:
-        return jsonify({'error': '내용이 없습니다'}), 400
-
-    tmp = DB_PATH + '.tmp'
-    try:
-        conn = sqlite3.connect(tmp)
-        conn.executescript(sql)
-        conn.close()
-    except Exception as e:
-        if os.path.exists(tmp): os.remove(tmp)
-        return jsonify({'error': str(e)}), 400
-
-    shutil.copy2(DB_PATH, DB_PATH + '.bak')
-    os.replace(tmp, DB_PATH)
-    return jsonify({'ok': True})
+    return jsonify({'error': 'Cloud DB 환경에서는 지원되지 않습니다.'}), 400
 
 
 if __name__ == '__main__':
