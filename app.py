@@ -165,12 +165,12 @@ def api_budget():
     if not card_id or str(card_id) == 'None' or str(card_id).strip() == '':
         card_id = None
         
-    db.execute(
-        "INSERT INTO budget (date, category, name, type, payment_method, amount, memo, card_id) VALUES (?,?,?,?,?,?,?,?)",
+    row = db.execute(
+        "INSERT INTO budget (date, category, name, type, payment_method, amount, memo, card_id) VALUES (?,?,?,?,?,?,?,?) RETURNING id",
         (data['date'], data.get('category'), data.get('name'), data.get('type'),
          data.get('payment_method'), data['amount'], data.get('memo'), card_id)
-    )
-    budget_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
+    ).fetchone()
+    budget_id = row['id']
     _sync_card_tx(db, budget_id, data)
     db.commit()
     return jsonify({'ok': True}), 201
@@ -333,8 +333,8 @@ def api_card_tx_bulk_delete():
         return jsonify({'error': 'ids가 필요합니다'}), 400
     db = get_db()
     placeholders = ','.join('?' * len(ids))
-    db.execute(f"DELETE FROM card_tx WHERE id IN ({placeholders})", ids)
-    deleted = db.execute("SELECT changes()").fetchone()[0]
+    cur = db.execute(f"DELETE FROM card_tx WHERE id IN ({placeholders})", ids)
+    deleted = cur.rowcount
     db.commit(); db.close()
     return jsonify({'ok': True, 'deleted': deleted})
 
@@ -1301,8 +1301,14 @@ def api_card_excel_mapping(card_id):
     if request.method == 'GET':
         row = db.execute("SELECT mapping FROM card_mappings WHERE card_id=?", (card_id,)).fetchone()
         return jsonify(json.loads(row['mapping']) if row else {})
-    db.execute("INSERT OR REPLACE INTO card_mappings (card_id, mapping) VALUES (?,?)",
-               (card_id, json.dumps(request.json or {})))
+    db.execute(
+        """
+        INSERT INTO card_mappings (card_id, mapping)
+        VALUES (?, ?)
+        ON CONFLICT (card_id) DO UPDATE SET mapping = EXCLUDED.mapping
+        """,
+        (card_id, json.dumps(request.json or {}))
+    )
     db.commit(); db.close()
     return jsonify({'ok': True})
 
@@ -1433,9 +1439,11 @@ def api_categories():
         rows = db.execute("SELECT * FROM categories ORDER BY sort_order, name").fetchall()
         return jsonify(rows_to_list(rows))
     d = request.json or {}
-    max_order = db.execute("SELECT COALESCE(MAX(sort_order), -1) FROM categories").fetchone()[0]
-    db.execute("INSERT OR IGNORE INTO categories (name, sort_order) VALUES (?, ?)",
-               (d.get('name', '').strip(), max_order + 1))
+    max_order = db.execute("SELECT COALESCE(MAX(sort_order), -1) AS max_order FROM categories").fetchone()['max_order']
+    db.execute(
+        "INSERT INTO categories (name, sort_order) VALUES (?, ?) ON CONFLICT (name) DO NOTHING",
+        (d.get('name', '').strip(), max_order + 1)
+    )
     db.commit(); db.close()
     return jsonify({'ok': True}), 201
 
@@ -1503,9 +1511,11 @@ def api_fund_groups():
         rows = db.execute("SELECT * FROM fund_groups ORDER BY sort_order, name").fetchall()
         return jsonify(rows_to_list(rows))
     d = request.json or {}
-    max_order = db.execute("SELECT COALESCE(MAX(sort_order), -1) FROM fund_groups").fetchone()[0]
-    db.execute("INSERT OR IGNORE INTO fund_groups (name, sort_order) VALUES (?, ?)",
-               (d.get('name', '').strip(), max_order + 1))
+    max_order = db.execute("SELECT COALESCE(MAX(sort_order), -1) AS max_order FROM fund_groups").fetchone()['max_order']
+    db.execute(
+        "INSERT INTO fund_groups (name, sort_order) VALUES (?, ?) ON CONFLICT (name) DO NOTHING",
+        (d.get('name', '').strip(), max_order + 1)
+    )
     db.commit(); db.close()
     return jsonify({'ok': True}), 201
 

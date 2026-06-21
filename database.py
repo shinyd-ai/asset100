@@ -22,6 +22,7 @@ class SQLiteCompatibleConnection:
         
         # 2. strftime('%Y', date) -> to_char(date::date, 'YYYY') 로 변경
         # 패턴: strftime('%Y', column)
+        sql = re.sub(r"strftime\('%Y-%m',\s*([^)]+)\)", r"to_char(\1::date, 'YYYY-MM')", sql)
         sql = re.sub(r"strftime\('%Y',\s*([^)]+)\)", r"to_char(\1::date, 'YYYY')", sql)
         # 패턴: strftime('%m', column)
         sql = re.sub(r"strftime\('%m',\s*([^)]+)\)", r"to_char(\1::date, 'MM')", sql)
@@ -299,6 +300,47 @@ def init_db():
             c.execute(sql)
         except Exception as e:
             print(f"Migration skip: {e}")
+            conn.rollback()
+            continue
+
+    serial_tables = [
+        'income',
+        'budget',
+        'card_info',
+        'card_tx',
+        'stocks',
+        'stock_tx',
+        'etf',
+        'crypto',
+        'residence',
+        'real_estate',
+        'loans',
+        'pension',
+        'goals',
+        'cash_deposits',
+        'card_mappings',
+        'card_category_rules',
+        'categories',
+        'tenant_contracts',
+        'property_costs',
+        'fund_groups',
+        'fund_group_rules',
+        'monthly_fund_budgets',
+    ]
+    for table in serial_tables:
+        try:
+            c.execute(
+                """
+                SELECT setval(
+                    pg_get_serial_sequence(%s, 'id'),
+                    COALESCE((SELECT MAX(id) FROM """ + table + """), 0) + 1,
+                    false
+                )
+                """,
+                (table,)
+            )
+        except Exception as e:
+            print(f"Sequence sync skip ({table}): {e}")
             conn.rollback()
             continue
 
