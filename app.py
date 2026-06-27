@@ -325,6 +325,144 @@ def api_card_tx_detail(rid):
     return jsonify({'ok': True})
 
 
+@app.route('/api/card-tx/<int:rid>/history')
+def api_card_tx_history(rid):
+    db = get_db()
+    tx = db.execute(
+        "SELECT t.*, c.card_name, g.name AS fund_group_name "
+        "FROM card_tx t "
+        "LEFT JOIN card_info c ON t.card_id = c.id "
+        "LEFT JOIN fund_groups g ON t.fund_group_id = g.id "
+        "WHERE t.id = ?",
+        (rid,)
+    ).fetchone()
+    if not tx:
+        db.close()
+        return jsonify({'error': '거래를 찾을 수 없습니다.'}), 404
+
+    history = db.execute(
+        "SELECT t.id, t.date, t.name, t.category, t.fund_group_id, g.name AS fund_group_name, "
+        "       t.amount, t.memo, c.card_name "
+        "FROM card_tx t "
+        "LEFT JOIN card_info c ON t.card_id = c.id "
+        "LEFT JOIN fund_groups g ON t.fund_group_id = g.id "
+        "WHERE t.id != ? AND t.name = ? "
+        "ORDER BY t.date DESC, t.id DESC LIMIT 8",
+        (rid, tx['name'] or '')
+    ).fetchall()
+
+    recommendation = {
+        'category': tx['category'] or '',
+        'fund_group_id': tx['fund_group_id'],
+        'fund_group_name': tx['fund_group_name'] or '',
+        'source': 'current' if (tx['category'] or tx['fund_group_id']) else '',
+    }
+
+    for row in history:
+        if not recommendation['category'] and row['category']:
+            recommendation['category'] = row['category']
+            recommendation['source'] = 'history'
+        if not recommendation['fund_group_id'] and row['fund_group_id']:
+            recommendation['fund_group_id'] = row['fund_group_id']
+            recommendation['fund_group_name'] = row['fund_group_name'] or ''
+            recommendation['source'] = 'history'
+
+    if not recommendation['category']:
+        recommendation['category'] = _get_category_hint(db, tx['name'])
+        if recommendation['category']:
+            recommendation['source'] = 'rule'
+
+    if not recommendation['fund_group_id']:
+        recommendation['fund_group_id'] = _get_fund_group_hint(db, tx['name'])
+        if recommendation['fund_group_id']:
+            fg = db.execute("SELECT name FROM fund_groups WHERE id = ?", (recommendation['fund_group_id'],)).fetchone()
+            recommendation['fund_group_name'] = fg['name'] if fg else ''
+            recommendation['source'] = 'rule'
+
+    db.close()
+    return jsonify({
+        'tx': dict(tx),
+        'history': rows_to_list(history),
+        'recommendation': recommendation,
+    })
+
+
+@app.route('/api/card-tx/<int:rid>/apply-history', methods=['POST'])
+def api_card_tx_apply_history(rid):
+    data = request.json or {}
+    scope = data.get('scope', 'current')
+    category = (data.get('category') or '').strip()
+    fund_group_id = data.get('fund_group_id')
+    if not fund_group_id or str(fund_group_id) == 'None' or str(fund_group_id).strip() == '':
+        fund_group_id = None
+
+    if not category and not fund_group_id:
+        return jsonify({'error': '적용할 카테고리 또는 자금 그룹이 필요합니다.'}), 400
+
+    db = get_db()
+    tx = db.execute("SELECT id, name FROM card_tx WHERE id = ?", (rid,)).fetchone()
+    if not tx:
+        db.close()
+        return jsonify({'error': '거래를 찾을 수 없습니다.'}), 404
+
+    if scope == 'merchant':
+        filters = ["name = ?"]
+        params = [tx['name'] or '']
+        card_id = data.get('card_id')
+        year = data.get('year')
+        month = data.get('month')
+        if card_id:
+            filters.append("card_id = ?")
+            params.append(card_id)
+        if year and month:
+            filters.append("strftime('%Y', date) = ?")
+            filters.append("strftime('%m', date) = ?")
+            params.extend([year, str(month).zfill(2)])
+        base_where = " AND ".join(filters)
+
+        candidates = db.execute(
+            f"SELECT id, category_locked, fund_group_locked FROM card_tx WHERE {base_where}",
+            params
+        ).fetchall()
+        updated_ids = set()
+
+        if category:
+            category_ids = [r['id'] for r in candidates if not r['category_locked']]
+            if category_ids:
+                placeholders = ','.join('?' * len(category_ids))
+                db.execute(
+                    f"UPDATE card_tx SET category = ?, category_locked = 1 WHERE id IN ({placeholders})",
+                    [category, *category_ids]
+                )
+                updated_ids.update(category_ids)
+        if fund_group_id:
+            fund_ids = [r['id'] for r in candidates if not r['fund_group_locked']]
+            if fund_ids:
+                placeholders = ','.join('?' * len(fund_ids))
+                db.execute(
+                    f"UPDATE card_tx SET fund_group_id = ?, fund_group_locked = 1 WHERE id IN ({placeholders})",
+                    [fund_group_id, *fund_ids]
+                )
+                updated_ids.update(fund_ids)
+        updated = len(updated_ids)
+    else:
+        sets = []
+        params = []
+        if category:
+            sets.extend(["category = ?", "category_locked = 1"])
+            params.append(category)
+        if fund_group_id:
+            sets.extend(["fund_group_id = ?", "fund_group_locked = 1"])
+            params.append(fund_group_id)
+        params.append(rid)
+        cur = db.execute(f"UPDATE card_tx SET {', '.join(sets)} WHERE id = ?", params)
+        updated = cur.rowcount
+
+    db.commit()
+    db.close()
+    return jsonify({'ok': True, 'updated': updated})
+
+
 @app.route('/api/card-tx/bulk', methods=['DELETE'])
 def api_card_tx_bulk_delete():
     data = request.json or {}
@@ -1161,6 +1299,58 @@ def _detect_mapping(headers):
                 m[field] = h; break
     return m
 
+def _row_has_value(row):
+    return any(v is not None and str(v).strip() for v in row)
+
+def _trim_trailing_empty_rows(rows):
+    while rows and not _row_has_value(rows[-1]):
+        rows.pop()
+    return rows
+
+def _stringify_cell(value):
+    if value is None:
+        return ''
+    if hasattr(value, 'strftime'):
+        return value.strftime('%Y-%m-%d')
+    return str(value).strip()
+
+def _normalize_headers(row, width=None):
+    width = width or len(row)
+    seen = {}
+    headers = []
+    for i in range(width):
+        raw = row[i] if i < len(row) else ''
+        label = str(raw).strip() if raw is not None and str(raw).strip() else f'컬럼{i + 1}'
+        seen[label] = seen.get(label, 0) + 1
+        if seen[label] > 1:
+            label = f'{label}_{seen[label]}'
+        headers.append(label)
+    return headers
+
+def _build_excel_payload(rows, header_idx):
+    header_idx = max(0, min(header_idx, len(rows) - 1))
+    data_start_idx = header_idx + 1
+    data_rows = [
+        list(row) for row in rows[data_start_idx:]
+        if _row_has_value(row)
+    ]
+    width = max([len(row) for row in rows] + [1])
+    headers = _normalize_headers(rows[header_idx], width)
+    data = [
+        [(row[i] if i < len(row) else '') for i in range(width)]
+        for row in data_rows
+    ]
+    raw_rows = [
+        [_stringify_cell(row[i] if i < len(row) else '') for i in range(width)]
+        for row in rows
+    ]
+    return headers, data, raw_rows, {
+        'header_row': header_idx + 1,
+        'detected_header_row': header_idx + 1,
+        'data_start_row': data_start_idx + 1,
+        'raw_row_count': len(rows),
+    }
+
 def _parse_date(val):
     if val is None: return None
     if hasattr(val, 'strftime'): return val.strftime('%Y-%m-%d')
@@ -1201,7 +1391,8 @@ def _parse_file(file_bytes, filename):
                 try:
                     text = file_bytes.decode(enc)
                     rows = [[str(c).strip() for c in r]
-                            for r in csv.reader(io.StringIO(text)) if any(c for c in r)]
+                            for r in csv.reader(io.StringIO(text))]
+                    rows = _trim_trailing_empty_rows(rows)
                     if rows:
                         success = True
                         break
@@ -1225,8 +1416,8 @@ def _parse_file(file_bytes, filename):
                                     row_vals.append(datetime(*t[:6]))
                                 except: row_vals.append(cell.value)
                             else: row_vals.append(cell.value)
-                        if any(v is not None and str(v).strip() for v in row_vals):
-                            rows.append(row_vals)
+                        rows.append(row_vals)
+                    rows = _trim_trailing_empty_rows(rows)
                 except Exception as e:
                     # HTML 형식의 가짜 엑셀 처리
                     if b'<html' in file_bytes[:1024].lower() or b'<table' in file_bytes[:1024].lower():
@@ -1241,7 +1432,8 @@ def _parse_file(file_bytes, filename):
                             for tr in tr_matches:
                                 td_matches = re.findall(r'<t[dh][^>]*>(.*?)</t[dh]>', tr, re.I | re.S)
                                 row_vals = [re.sub(r'<[^>]+>', '', td).strip() for td in td_matches]
-                                if any(row_vals): rows.append(row_vals)
+                                rows.append(row_vals)
+                            rows = _trim_trailing_empty_rows(rows)
                     if not rows:
                         error_msg = f"Excel(.xls) 파싱 실패: {str(e)}"
         elif name.endswith('.xlsx'):
@@ -1251,8 +1443,8 @@ def _parse_file(file_bytes, filename):
                 try:
                     wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True)
                     ws = wb.active
-                    rows = [[cell.value for cell in row] for row in ws.iter_rows()
-                            if any(c.value is not None for c in row)]
+                    rows = [[cell.value for cell in row] for row in ws.iter_rows()]
+                    rows = _trim_trailing_empty_rows(rows)
                 except Exception as e:
                     error_msg = f"Excel(.xlsx) 파일을 읽는 중 오류가 발생했습니다: {str(e)}"
         else:
@@ -1262,23 +1454,21 @@ def _parse_file(file_bytes, filename):
             error_msg = "파일에서 읽을 수 있는 데이터가 없습니다."
 
         if error_msg:
-            return None, None, error_msg
+            return None, None, None, None, error_msg
 
         hi = _detect_header(rows)
-        headers = [str(h).strip() if h is not None else f'컬럼{i}' for i, h in enumerate(rows[hi])]
-        data    = [list(row) for row in rows[hi+1:]
-                   if any(v is not None and str(v).strip() for v in row)]
-        return headers, data, None
+        headers, data, raw_rows, meta = _build_excel_payload(rows, hi)
+        return headers, data, raw_rows, meta, None
 
     except Exception as e:
-        return None, None, f"파일 처리 중 예상치 못한 오류 발생: {str(e)}"
+        return None, None, None, None, f"파일 처리 중 예상치 못한 오류 발생: {str(e)}"
 
 
 @app.route('/api/card-excel/preview', methods=['POST'])
 def api_card_excel_preview():
     f = request.files.get('file')
     if not f: return jsonify({'error': '파일이 없습니다'}), 400
-    headers, data, error = _parse_file(f.read(), f.filename)
+    headers, data, raw_rows, meta, error = _parse_file(f.read(), f.filename)
     if error: return jsonify({'error': error}), 400
     sample = [
         {h: (str(row[i]).strip() if i < len(row) and row[i] is not None else '')
@@ -1291,8 +1481,15 @@ def api_card_excel_preview():
          for i in range(len(headers))]
         for row in data
     ]
-    return jsonify({'headers': headers, 'mapping': _detect_mapping(headers),
-                    'sample': sample, 'total': len(data), 'all_rows': all_rows})
+    return jsonify({
+        'headers': headers,
+        'mapping': _detect_mapping(headers),
+        'sample': sample,
+        'total': len(data),
+        'all_rows': all_rows,
+        'raw_rows': raw_rows,
+        **meta,
+    })
 
 
 @app.route('/api/card-excel/mapping/<int:card_id>', methods=['GET', 'POST'])
@@ -1320,6 +1517,7 @@ def api_card_excel_import():
     mapping  = data.get('mapping', {})
     headers  = data.get('headers', [])
     all_rows = data.get('all_rows', [])
+    row_numbers = data.get('row_numbers', [])
     if not card_id or not mapping.get('date') or not mapping.get('amount'):
         return jsonify({'error': '카드, 날짜, 금액 컬럼은 필수입니다'}), 400
 
@@ -1331,6 +1529,7 @@ def api_card_excel_import():
     skipped_details = []
     
     for i, row in enumerate(all_rows):
+        row_no = row_numbers[i] if i < len(row_numbers) else i + 1
         raw_date = get(row, mapping['date'])
         raw_amount = get(row, mapping['amount'])
         
@@ -1342,10 +1541,10 @@ def api_card_excel_import():
         
         # 스킵 사유 확인
         if not date_str:
-            skipped_details.append({'row': i+1, 'reason': '날짜 형식 오류', 'data': raw_date})
+            skipped_details.append({'row': row_no, 'reason': '날짜 형식 오류', 'data': raw_date})
             continue
         if amount <= 0:
-            skipped_details.append({'row': i+1, 'reason': '금액 누락(0 이하)', 'data': raw_amount})
+            skipped_details.append({'row': row_no, 'reason': '금액 누락(0 이하)', 'data': raw_amount})
             continue
             
         if db.execute("SELECT id FROM card_tx WHERE card_id=? AND date=? AND name=? AND amount=?",

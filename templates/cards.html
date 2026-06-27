@@ -87,11 +87,29 @@
           </button>
         </div>
         <div class="card-body">
-          <p class="text-muted small mb-3">자동 감지 결과입니다. 잘못된 항목은 드롭다운으로 수정하세요.</p>
+          <p class="text-muted small mb-3">자동 감지 결과입니다. 카드사 파일마다 결제내역 위치가 다르면 행 번호를 먼저 조정한 뒤 컬럼을 확인하세요.</p>
+          <div class="row g-3 align-items-end mb-4">
+            <div class="col-md-2 col-6">
+              <label class="form-label small fw-semibold" for="xlHeaderRow">헤더 행</label>
+              <input type="number" min="1" step="1" class="form-control form-control-sm" id="xlHeaderRow" onchange="applyExcelRowPosition()">
+            </div>
+            <div class="col-md-2 col-6">
+              <label class="form-label small fw-semibold" for="xlDataStartRow">데이터 시작 행</label>
+              <input type="number" min="1" step="1" class="form-control form-control-sm" id="xlDataStartRow" onchange="applyExcelRowPosition()">
+            </div>
+            <div class="col-md-3 col-12">
+              <button class="btn btn-sm btn-outline-primary w-100" onclick="applyExcelRowPosition()">
+                <i class="bi bi-arrow-repeat me-1"></i>행 기준 다시 적용
+              </button>
+            </div>
+            <div class="col-md-5 col-12">
+              <div class="text-muted small" id="xlRowInfo">자동 감지 결과를 사용 중입니다.</div>
+            </div>
+          </div>
           <div class="row g-3 mb-4" id="xlMappingForm"></div>
           <div class="form-check mb-2">
             <input class="form-check-input" type="checkbox" id="xlSaveMapping" checked>
-            <label class="form-check-label small" for="xlSaveMapping">이 매핑을 카드에 저장 (다음번에 자동 적용)</label>
+            <label class="form-check-label small" for="xlSaveMapping">이 매핑과 행 위치를 카드에 저장 (다음번에 자동 적용)</label>
           </div>
         </div>
       </div>
@@ -247,6 +265,7 @@
                     <th style="width: 110px" class="text-end">금액</th>
                     <th style="width: 80px">할부</th>
                     <th>메모</th>
+                    <th style="width: 74px" class="text-center">과거</th>
                     <th style="width: 100px" class="text-center">삭제</th>
                   </tr>
                 </thead>
@@ -266,6 +285,16 @@
 
       <!-- 우측 패널 -->
       <div class="col-lg-4 d-flex flex-column gap-3">
+        <!-- 선택 거래 과거 기록 -->
+        <div class="card border-0 shadow-sm">
+          <div class="card-header bg-white border-0 pt-3 pb-0 fw-semibold d-flex justify-content-between align-items-center">
+            <span><i class="bi bi-clock-history me-2 text-primary"></i>선택 거래 과거 기록</span>
+            <span class="badge bg-primary-subtle text-primary" id="txHistoryBadge" style="display:none">추천 있음</span>
+          </div>
+          <div class="card-body" id="txHistoryPanel">
+            <p class="text-muted text-center small mt-3 mb-3">거래 행의 <i class="bi bi-clock-history"></i> 버튼을 누르면 같은 가맹점의 과거 분류를 보여줍니다.</p>
+          </div>
+        </div>
         <!-- 자금 그룹별 지출 -->
         <div class="card border-0 shadow-sm">
           <div class="card-header bg-white border-0 pt-3 pb-0 fw-semibold d-flex justify-content-between align-items-center" style="cursor:pointer" onclick="txGrid.resetFilters()" title="클릭 시 모든 필터 해제">
@@ -417,6 +446,11 @@ const txGrid = new GridTable({
     { key: 'installment', type: 'number',
       render: v => v > 1 ? v + '개월' : '일시불' },
     { key: 'memo',        type: 'text' },
+    { key: 'history',     type: 'computed', align: 'end',
+      compute: row => `
+        <button class="btn btn-sm btn-outline-primary py-0" onclick="openTxHistory(event, '${row.id}')" title="같은 가맹점 과거 기록 보기">
+          <i class="bi bi-clock-history"></i>
+        </button>` },
   ],
   apiUrl: '/api/card-tx',
   getQueryParams: () => {
@@ -507,6 +541,150 @@ async function bulkDelete() {
   });
   if (!res?.ok) { alert('삭제 중 오류가 발생했습니다.'); return; }
   await txGrid.load();
+}
+
+// ── 선택 거래 과거 기록 패널 ────────────────────────────────
+let currentHistoryData = null;
+
+function escapeHtml(v) {
+  return String(v ?? '').replace(/[&<>"']/g, ch => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  }[ch]));
+}
+
+function fundGroupNameById(id) {
+  const group = allFundGroups.find(g => String(g.id) === String(id));
+  return group ? group.name : '';
+}
+
+async function openTxHistory(event, rowId) {
+  event?.stopPropagation();
+  if (txGrid._tr) txGrid.cancelEdit();
+  const panel = document.getElementById('txHistoryPanel');
+  const badge = document.getElementById('txHistoryBadge');
+  badge.style.display = 'none';
+  panel.innerHTML = `
+    <div class="text-center py-4">
+      <div class="spinner-border spinner-border-sm text-primary" role="status"></div>
+      <div class="text-muted small mt-2">과거 기록을 찾는 중...</div>
+    </div>`;
+
+  const data = await fetchJSON(`/api/card-tx/${rowId}/history`);
+  if (!data || data.error) {
+    panel.innerHTML = '<p class="text-danger small mb-0">과거 기록을 불러오지 못했습니다.</p>';
+    return;
+  }
+  currentHistoryData = data;
+  renderTxHistory(data);
+}
+
+function renderTxHistory(data) {
+  const panel = document.getElementById('txHistoryPanel');
+  const badge = document.getElementById('txHistoryBadge');
+  const tx = data.tx || {};
+  const rec = data.recommendation || {};
+  const history = data.history || [];
+  const hasRecommendation = Boolean(rec.category || rec.fund_group_id);
+  badge.style.display = hasRecommendation ? '' : 'none';
+
+  const sourceLabel = {
+    current: '현재값',
+    history: '과거 기록',
+    rule: '규칙',
+  }[rec.source] || '추천';
+
+  const recCategory = rec.category || '';
+  const recFundName = rec.fund_group_name || fundGroupNameById(rec.fund_group_id) || '';
+
+  panel.innerHTML = `
+    <div class="mb-3">
+      <div class="d-flex justify-content-between gap-2 align-items-start">
+        <div class="min-w-0">
+          <div class="fw-bold text-truncate" title="${escapeHtml(tx.name)}">${escapeHtml(tx.name || '-')}</div>
+          <div class="text-muted small">${escapeHtml(tx.date || '-')} · ${escapeHtml(tx.card_name || '카드 미지정')}</div>
+        </div>
+        <div class="text-end fw-semibold text-nowrap">${fmt(tx.amount || 0)}원</div>
+      </div>
+    </div>
+    <div class="border rounded p-3 mb-3 bg-light">
+      <div class="d-flex justify-content-between align-items-center mb-2">
+        <span class="small fw-semibold text-muted">추천값</span>
+        ${hasRecommendation ? `<span class="badge bg-primary-subtle text-primary">${sourceLabel}</span>` : ''}
+      </div>
+      ${hasRecommendation ? `
+        <div class="d-flex flex-wrap gap-2 mb-3">
+          ${recCategory ? `<span class="badge bg-info-subtle text-info">${escapeHtml(recCategory)}</span>` : '<span class="badge bg-secondary-subtle text-secondary">카테고리 없음</span>'}
+          ${recFundName ? `<span class="badge bg-warning-subtle text-warning-emphasis">${escapeHtml(recFundName)}</span>` : '<span class="badge bg-secondary-subtle text-secondary">자금 그룹 없음</span>'}
+        </div>
+        <div class="d-grid gap-2">
+          <button class="btn btn-sm btn-primary" onclick="applyTxHistory('current')">
+            <i class="bi bi-check2 me-1"></i>이 거래에 적용
+          </button>
+          <button class="btn btn-sm btn-outline-primary" onclick="applyTxHistory('merchant')">
+            <i class="bi bi-layers me-1"></i>현재 조회 범위 같은 가맹점에 적용
+          </button>
+        </div>` : `
+        <p class="text-muted small mb-0">아직 추천할 과거 분류가 없습니다. 이 거래를 저장하면 다음부터 기록으로 사용됩니다.</p>`}
+    </div>
+    <div class="small fw-semibold mb-2">최근 같은 가맹점</div>
+    ${history.length ? history.map(row => renderHistoryItem(row)).join('') : '<p class="text-muted small mb-0">같은 가맹점 과거 기록이 없습니다.</p>'}
+  `;
+}
+
+function renderHistoryItem(row) {
+  const fundName = row.fund_group_name || fundGroupNameById(row.fund_group_id) || '-';
+  return `
+    <div class="history-tx-item">
+      <div class="d-flex justify-content-between gap-2">
+        <div class="min-w-0">
+          <div class="small fw-semibold text-truncate" title="${escapeHtml(row.name)}">${escapeHtml(row.date || '-')} · ${escapeHtml(row.name || '-')}</div>
+          <div class="text-muted small">${escapeHtml(row.card_name || '카드 미지정')} · ${escapeHtml(row.memo || '메모 없음')}</div>
+        </div>
+        <div class="small fw-semibold text-nowrap">${fmt(row.amount || 0)}원</div>
+      </div>
+      <div class="d-flex flex-wrap gap-1 mt-2">
+        <span class="badge bg-info-subtle text-info">${escapeHtml(row.category || '-')}</span>
+        <span class="badge bg-warning-subtle text-warning-emphasis">${escapeHtml(fundName)}</span>
+      </div>
+    </div>`;
+}
+
+async function applyTxHistory(scope) {
+  if (!currentHistoryData?.tx) return;
+  const rec = currentHistoryData.recommendation || {};
+  if (!rec.category && !rec.fund_group_id) return;
+
+  if (scope === 'merchant') {
+    const ok = confirm('현재 조회 중인 기간/카드 안에서 같은 가맹점의 잠금되지 않은 거래에 적용할까요?');
+    if (!ok) return;
+  }
+
+  const payload = {
+    scope,
+    category: rec.category || '',
+    fund_group_id: rec.fund_group_id || null,
+    card_id: document.getElementById('txCardFilter').value || null,
+    year: document.getElementById('txYear').value,
+    month: document.getElementById('txMonth').value,
+  };
+  const res = await fetchJSON(`/api/card-tx/${currentHistoryData.tx.id}/apply-history`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(payload),
+  });
+  if (!res?.ok) {
+    alert(res?.error || '적용 중 오류가 발생했습니다.');
+    return;
+  }
+
+  await txGrid.load();
+  const msg = document.getElementById('autoCatMsg');
+  msg.textContent = scope === 'merchant'
+    ? `같은 가맹점 ${res.updated}건에 적용됨`
+    : '선택 거래에 적용됨';
+  msg.style.display = '';
+  setTimeout(() => { msg.style.display = 'none'; }, 3000);
+  await openTxHistory(null, currentHistoryData.tx.id);
 }
 
 // ── 자금 그룹별 지출 사이드패널 ──────────────────────────────
@@ -637,8 +815,93 @@ async function autoCategorizeTx() {
 }
 
 // ── 엑셀 가져오기 ──────────────────────────────────────────
-let xlHeaders = [], xlAllRows = [], xlSample = [];
+let xlHeaders = [], xlAllRows = [], xlSample = [], xlRawRows = [], xlRowNumbers = [];
+let xlHeaderRow = 1, xlDataStartRow = 2, xlSavedMapping = {};
 const FIELD_LABELS = { date:'날짜 (필수)', name:'가맹점명', amount:'금액 (필수)', installment:'할부개월', category:'카테고리' };
+const XL_HINTS = {
+  date: ['이용일', '이용일시', '거래일', '거래일자', '이용일자', '날짜', '결제일', '승인일', '사용일', '거래 일시'],
+  name: ['이용가맹점', '가맹점명', '상호명', '가맹점', '이용처', '거래처', '내용', '적요', '사용처', '거래내용'],
+  amount: ['이용금액', '결제금액', '거래금액', '금액', '승인금액', '사용금액', '국내이용금액'],
+  installment: ['할부', '할부개월', '할부개월수', '분할', '할부기간'],
+  category: ['업종', '카테고리', '이용구분', '업종명', '분류'],
+};
+
+function sanitizeSavedMapping(mapping) {
+  const clean = {};
+  Object.keys(FIELD_LABELS).forEach(key => {
+    if (mapping?.[key]) clean[key] = mapping[key];
+  });
+  return clean;
+}
+
+function rowHasValue(row) {
+  return row?.some(v => String(v ?? '').trim());
+}
+
+function normalizeExcelHeaders(row, width) {
+  const seen = {};
+  return Array.from({ length: width }, (_, i) => {
+    let label = String(row?.[i] ?? '').trim() || `컬럼${i + 1}`;
+    seen[label] = (seen[label] || 0) + 1;
+    if (seen[label] > 1) label = `${label}_${seen[label]}`;
+    return label;
+  });
+}
+
+function detectExcelMapping(headers) {
+  const mapping = {};
+  Object.entries(XL_HINTS).forEach(([field, hints]) => {
+    const found = headers.find(h => hints.some(hint => String(h).includes(hint)));
+    if (found) mapping[field] = found;
+  });
+  return mapping;
+}
+
+function rebuildExcelRows(mappingOverride = null) {
+  if (!xlRawRows.length) return;
+  const headerIdx = Math.max(0, Math.min(xlHeaderRow - 1, xlRawRows.length - 1));
+  const dataIdx = Math.max(headerIdx + 1, Math.min(xlDataStartRow - 1, xlRawRows.length));
+  xlHeaderRow = headerIdx + 1;
+  xlDataStartRow = dataIdx + 1;
+  const dataPairs = xlRawRows
+    .slice(dataIdx)
+    .map((row, i) => ({ row, rowNumber: dataIdx + i + 1 }))
+    .filter(item => rowHasValue(item.row));
+  const width = Math.max(
+    xlRawRows[headerIdx]?.length || 0,
+    ...dataPairs.slice(0, 50).map(item => item.row.length),
+    1
+  );
+
+  xlHeaders = normalizeExcelHeaders(xlRawRows[headerIdx] || [], width);
+  xlAllRows = dataPairs.map(item => xlHeaders.map((_, i) => String(item.row[i] ?? '').trim()));
+  xlRowNumbers = dataPairs.map(item => item.rowNumber);
+  xlSample = xlAllRows.slice(0, 5).map(row =>
+    Object.fromEntries(xlHeaders.map((h, i) => [h, row[i] ?? '']))
+  );
+
+  document.getElementById('xlHeaderRow').value = xlHeaderRow;
+  document.getElementById('xlDataStartRow').value = xlDataStartRow;
+  document.getElementById('xlRowInfo').textContent =
+    `현재 기준: 헤더 ${xlHeaderRow}행, 데이터 ${xlDataStartRow}행부터 · 가져올 후보 ${xlAllRows.length.toLocaleString()}건`;
+
+  const mapping = mappingOverride || detectExcelMapping(xlHeaders);
+  renderMappingForm(mapping);
+  renderPreview(getMapping());
+  document.getElementById('xlTotalInfo').textContent =
+    `총 ${xlAllRows.length.toLocaleString()}건 · 원본 ${xlRawRows.length.toLocaleString()}행`;
+}
+
+function applyExcelRowPosition(mappingOverride = null) {
+  const maxRow = Math.max(1, xlRawRows.length);
+  let headerRow = parseInt(document.getElementById('xlHeaderRow').value, 10) || xlHeaderRow || 1;
+  let dataStartRow = parseInt(document.getElementById('xlDataStartRow').value, 10) || headerRow + 1;
+  headerRow = Math.max(1, Math.min(headerRow, maxRow));
+  dataStartRow = Math.max(headerRow + 1, Math.min(dataStartRow, maxRow + 1));
+  xlHeaderRow = headerRow;
+  xlDataStartRow = dataStartRow;
+  rebuildExcelRows(mappingOverride);
+}
 
 async function handleFile(file) {
   if (!file) return;
@@ -660,23 +923,25 @@ async function handleFile(file) {
     return;
   }
 
-  xlHeaders = res.headers;
-  xlAllRows = res.all_rows;
-  xlSample  = res.sample;
+  xlRawRows = res.raw_rows || [];
+  xlHeaderRow = res.header_row || 1;
+  xlDataStartRow = res.data_start_row || (xlHeaderRow + 1);
 
   // 저장된 매핑 불러오기 (없으면 자동감지 결과 사용)
   const saved = await fetchJSON(`/api/card-excel/mapping/${cardId}`);
-  const mapping = (saved && Object.keys(saved).length) ? saved : res.mapping;
+  xlSavedMapping = saved || {};
+  if (xlSavedMapping._header_row) xlHeaderRow = parseInt(xlSavedMapping._header_row, 10) || xlHeaderRow;
+  if (xlSavedMapping._data_start_row) xlDataStartRow = parseInt(xlSavedMapping._data_start_row, 10) || xlDataStartRow;
+  const savedMapping = sanitizeSavedMapping(xlSavedMapping);
+  const mapping = Object.keys(savedMapping).length ? savedMapping : (res.mapping || {});
 
-  renderMappingForm(mapping);
-  renderPreview(mapping);
-  document.getElementById('xlTotalInfo').textContent = `총 ${res.total.toLocaleString()}건`;
+  rebuildExcelRows(mapping);
   document.getElementById('xl-step1').style.display = 'none';
   document.getElementById('xl-step2').style.display = '';
 }
 
 function renderMappingForm(mapping) {
-  const options = xlHeaders.map(h => `<option value="${h}">${h}</option>`).join('');
+  const options = xlHeaders.map(h => `<option value="${escapeHtml(h)}">${escapeHtml(h)}</option>`).join('');
   document.getElementById('xlMappingForm').innerHTML = Object.entries(FIELD_LABELS).map(([field, label]) => `
     <div class="col-md-4 col-6">
       <label class="form-label small fw-semibold">${label}</label>
@@ -717,13 +982,22 @@ async function doImport() {
 
   if (document.getElementById('xlSaveMapping').checked) {
     await fetchJSON(`/api/card-excel/mapping/${cardId}`, {
-      method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(mapping)
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ ...mapping, _header_row: xlHeaderRow, _data_start_row: xlDataStartRow })
     });
   }
 
   const res = await fetchJSON('/api/card-excel/import', {
     method: 'POST', headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({ card_id: cardId, mapping, headers: xlHeaders, all_rows: xlAllRows })
+    body: JSON.stringify({
+      card_id: cardId,
+      mapping,
+      headers: xlHeaders,
+      all_rows: xlAllRows,
+      row_numbers: xlRowNumbers,
+      data_start_row: xlDataStartRow,
+    })
   });
   if (!res?.ok) { alert('오류: ' + (res?.error || '알 수 없는 오류')); return; }
 
@@ -865,10 +1139,14 @@ async function autoMapImmediate() {
 
 function resetUpload(keepError = false) {
   xlHeaders = []; xlAllRows = []; xlSample = [];
+  xlRawRows = []; xlRowNumbers = [];
+  xlHeaderRow = 1; xlDataStartRow = 2; xlSavedMapping = {};
   document.getElementById('xlDropZone').innerHTML = `
     <i class="bi bi-file-earmark-spreadsheet fs-1 d-block mb-2 text-success"></i>
     파일을 끌어다 놓거나 클릭하여 선택<br>
-    <small class="text-muted">.xlsx .xls .csv 지원</small>`;
+    <small class="text-muted">.xlsx .xls .csv 지원</small>
+    <input type="file" id="xlFileInput" accept=".xlsx,.xls,.csv" style="display:none"
+           onchange="handleFile(this.files[0])">`;
   document.getElementById('xl-step2').style.display = 'none';
   document.getElementById('xl-step3').style.display = 'none';
   document.getElementById('xl-step1').style.display = '';
