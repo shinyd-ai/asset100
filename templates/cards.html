@@ -284,35 +284,42 @@
             <div class="mb-2">
               <label class="form-label small fw-semibold text-muted">샘플 예시 불러오기</label>
               <div class="d-flex gap-1 flex-wrap">
-                <button type="button" class="btn btn-xs btn-outline-secondary btn-sm py-0" onclick="loadSampleSms('hyundai')">현대카드</button>
-                <button type="button" class="btn btn-xs btn-outline-secondary btn-sm py-0" onclick="loadSampleSms('samsung')">삼성카드</button>
-                <button type="button" class="btn btn-xs btn-outline-secondary btn-sm py-0" onclick="loadSampleSms('lotte')">롯데카드</button>
-                <button type="button" class="btn btn-xs btn-outline-secondary btn-sm py-0" onclick="loadSampleSms('hana')">하나카드</button>
+                <button type="button" class="btn btn-xs btn-outline-secondary btn-sm py-0" onclick="loadSampleSms('hyundai')">현대</button>
+                <button type="button" class="btn btn-xs btn-outline-secondary btn-sm py-0" onclick="loadSampleSms('samsung')">삼성</button>
+                <button type="button" class="btn btn-xs btn-outline-secondary btn-sm py-0" onclick="loadSampleSms('lotte')">롯데</button>
+                <button type="button" class="btn btn-xs btn-outline-secondary btn-sm py-0" onclick="loadSampleSms('hana')">하나</button>
+                <button type="button" class="btn btn-xs btn-outline-primary btn-sm py-0 fw-semibold" onclick="loadSampleSms('bulk')">
+                  <i class="bi bi-stack me-1"></i>4건 일괄 예시
+                </button>
               </div>
             </div>
 
             <div class="mb-3">
-              <textarea id="testSmsText" class="form-control font-monospace" rows="5"
-                placeholder="[현대카드] 08/24 13:20 15,400원(일시불) 스타벅스 승인"></textarea>
+              <textarea id="testSmsText" class="form-control font-monospace" rows="6"
+                placeholder="결제 문자를 붙여넣으세요. 여러 건을 한 번에 붙여넣어도 자동으로 분리되어 일괄 등록됩니다!"></textarea>
             </div>
 
             <button class="btn btn-primary w-100 fw-semibold mb-3" onclick="submitSmsWebhookTest()">
-              <i class="bi bi-arrow-right-circle me-1"></i>문자 분석 및 거래 등록
+              <i class="bi bi-arrow-right-circle me-1"></i>문자 분석 및 거래 등록 (다중 지원)
             </button>
 
             <!-- 결과 표시창 -->
             <div id="smsTestResult" style="display:none;" class="p-3 rounded bg-light border">
-              <h6 class="fw-bold mb-2" id="smsResultTitle">분석 결과</h6>
-              <table class="table table-sm table-borderless small mb-0">
-                <tr><th style="width:70px;" class="text-muted">카드사</th><td id="resCard" class="fw-bold">-</td></tr>
-                <tr><th class="text-muted">사용일자</th><td id="resDate">-</td></tr>
-                <tr><th class="text-muted">가맹점</th><td id="resName" class="fw-bold text-primary">-</td></tr>
-                <tr><th class="text-muted">결제금액</th><td id="resAmount" class="fw-bold text-danger">-</td></tr>
-                <tr><th class="text-muted">할부</th><td id="resInstallment">-</td></tr>
-                <tr><th class="text-muted">카테고리</th><td id="resCategory"><span class="badge bg-secondary">-</span></td></tr>
-              </table>
-              <div id="smsSuccessAlert" class="alert alert-success py-1 px-2 small mt-2 mb-0" style="display:none;">
-                <i class="bi bi-check-circle-fill me-1"></i>성공적으로 등록되었습니다! 거래내역 탭에서 확인하세요.
+              <div class="d-flex justify-content-between align-items-center mb-2">
+                <h6 class="fw-bold mb-0" id="smsResultTitle">분석 및 등록 결과</h6>
+                <span class="badge bg-success" id="smsResultBadge">0건 등록</span>
+              </div>
+              <div id="smsSuccessAlert" class="alert alert-success py-1 px-2 small mb-2" style="display:none;"></div>
+              
+              <div class="table-responsive">
+                <table class="table table-sm table-bordered bg-white small mb-0" id="smsResultTable">
+                  <thead class="table-light">
+                    <tr>
+                      <th>카드사</th><th>날짜</th><th>가맹점</th><th class="text-end">금액</th><th>카테고리</th>
+                    </tr>
+                  </thead>
+                  <tbody id="smsResultBody"></tbody>
+                </table>
               </div>
             </div>
           </div>
@@ -1278,7 +1285,27 @@ function loadSampleSms(type) {
     hyundai: '[Web발신]\n현대카드 김*수님\n08/24 13:20 15,400원(일시불)\n스타벅스 강남점 승인\n누적: 340,000원',
     samsung: '[Web발신]\n삼성카드 08/24 14:10\n25,000원 일시불\n파리바게뜨 승인',
     lotte: '[Web발신]\n[롯데카드] 08/24 15:30\n18,000원 일시불\n배달의민족 승인',
-    hana: '[Web발신]\n[하나카드] 김*수님\n08/24 12:40 일시불\n9,500원 메가커피 승인'
+    hana: '[Web발신]\n[하나카드] 김*수님\n08/24 12:40 일시불\n9,500원 메가커피 승인',
+    bulk: `[Web발신]
+현대카드 김*수님
+08/24 13:20 15,400원(일시불)
+스타벅스 강남점 승인
+누적: 340,000원
+
+[Web발신]
+삼성카드 08/24 14:10
+25,000원 일시불
+파리바게뜨 승인
+
+[Web발신]
+[롯데카드] 08/24 15:30
+18,000원 일시불
+배달의민족 승인
+
+[Web발신]
+[하나카드] 김*수님
+08/24 12:40 일시불
+9,500원 메가커피 승인`
   };
   document.getElementById('testSmsText').value = samples[type] || '';
 }
@@ -1307,27 +1334,39 @@ async function submitSmsWebhookTest() {
     const data = await res.json();
     const resultBox = document.getElementById('smsTestResult');
     const alertBox = document.getElementById('smsSuccessAlert');
+    const badge = document.getElementById('smsResultBadge');
+    const tbody = document.getElementById('smsResultBody');
+    
     resultBox.style.display = 'block';
     
     if (res.ok && data.ok) {
-      const d = data.data || {};
-      document.getElementById('resCard').textContent = d.card_company || '자동매칭';
-      document.getElementById('resDate').textContent = d.date || '-';
-      document.getElementById('resName').textContent = d.name || '-';
-      document.getElementById('resAmount').textContent = Number(d.amount || 0).toLocaleString() + '원';
-      document.getElementById('resInstallment').textContent = (d.installment && d.installment > 1) ? d.installment + '개월' : '일시불';
-      document.getElementById('resCategory').innerHTML = `<span class="badge bg-primary">${d.category || '미분류'}</span>`;
+      const items = data.results || (data.data ? [data.data] : []);
+      badge.textContent = `${items.length}건 등록 완료`;
+      badge.className = 'badge bg-success';
+      
+      tbody.innerHTML = items.map(item => `
+        <tr>
+          <td><span class="badge bg-light text-dark border">${item.card_company || '카드'}</span></td>
+          <td>${item.date || '-'}</td>
+          <td class="fw-semibold text-primary">${item.name || '-'}</td>
+          <td class="text-end fw-bold text-danger">${Number(item.amount || 0).toLocaleString()}원</td>
+          <td><span class="badge bg-secondary">${item.category || '미분류'}</span></td>
+        </tr>
+      `).join('');
       
       alertBox.style.display = 'block';
-      alertBox.className = 'alert alert-success py-1 px-2 small mt-2 mb-0';
-      alertBox.innerHTML = '<i class="bi bi-check-circle-fill me-1"></i>성공적으로 DB에 등록되었습니다! 거래내역 탭에서 확인하세요.';
+      alertBox.className = 'alert alert-success py-1 px-2 small mb-2';
+      alertBox.innerHTML = `<i class="bi bi-check-circle-fill me-1"></i>총 <strong>${items.length}건</strong>이 가계부 DB에 성공적으로 등록되었습니다!`;
       
       if (typeof txGrid !== 'undefined' && txGrid.load) {
         txGrid.load();
       }
     } else {
+      badge.textContent = '등록 실패';
+      badge.className = 'badge bg-danger';
+      tbody.innerHTML = '';
       alertBox.style.display = 'block';
-      alertBox.className = 'alert alert-danger py-1 px-2 small mt-2 mb-0';
+      alertBox.className = 'alert alert-danger py-1 px-2 small mb-2';
       alertBox.innerHTML = `<i class="bi bi-exclamation-triangle-fill me-1"></i>파싱 실패: ${data.error || '분석할 수 없는 문자 형식입니다.'}`;
     }
   } catch (err) {

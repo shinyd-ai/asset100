@@ -412,10 +412,68 @@ def find_matching_card_id(db, card_company):
     return rows[0]['id']
 
 
+def split_sms_messages(text):
+    """여러 건의 결제 문자가 섞여있을 때 개별 문자로 분리 (모든 줄바꿈 및 붙여넣기 패턴 완벽 대응)"""
+    if not text or not text.strip():
+        return []
+    
+    clean = text.strip()
+    
+    # 1. 빈 줄 2개 이상 (\n\s*\n+)으로 구분되어 있는 경우
+    chunks = [c.strip() for c in re.split(r'\n\s*\n+', clean) if c.strip()]
+    if len(chunks) > 1:
+        return chunks
+        
+    # 2. [Web발신] 기준 분리
+    if clean.count('[Web발신]') > 1:
+        parts = re.split(r'(?=\[Web발신\])', clean)
+        res = [p.strip() for p in parts if p.strip()]
+        if len(res) > 1:
+            return res
+
+    lines = [l.strip() for l in clean.splitlines() if l.strip()]
+    if len(lines) <= 1:
+        return [clean]
+
+    # 3. 각 줄마다 금액(숫자+원 또는 15,400 형태)이 각각 들어있는 경우 -> 1줄 1건으로 분리
+    lines_with_amount = [l for l in lines if re.search(r'[0-9,]+\s*원|(?:^|\s)[0-9]{1,3}(?:,[0-9]{3})+', l)]
+    if len(lines_with_amount) > 1 and len(lines_with_amount) >= len(lines) * 0.8:
+        return lines
+
+    # 4. 카드사 시작 패턴 기준 분리 (대괄호 유무 상관없이 줄 시작 지점)
+    card_kws = ['현대카드', '현대', '삼성카드', '삼성', '롯데카드', '롯데', '하나카드', '하나', 'KB국민카드', 'KB국민', '국민카드', '신한카드', '신한', '우리카드', '우리', 'NH농협카드', 'NH농협', '농협카드', '카카오페이', '카카오뱅크', '토스뱅크', '토스', 'BC카드', '비씨카드']
+    kw_pattern = '|'.join([re.escape(k) for k in card_kws])
+    split_pattern = rf'(?:^|\n)(?=\s*(?:\[\s*(?:{kw_pattern})[^\]]*\]|(?:{kw_pattern})\s*(?:\([0-9*]+\)|[가-힣\*]+님|\d{{1,2}}[./\-]\d{{1,2}}|\d+원|승인|결제|$)))'
+    
+    parts = re.split(split_pattern, clean)
+    valid_parts = [p.strip() for p in parts if p.strip()]
+    if len(valid_parts) > 1:
+        return valid_parts
+
+    # 5. 여러 줄 블록에서 건별 묶기 (금액이 나온 후 다음 건의 시작 신호 감지)
+    if len(lines_with_amount) > 1:
+        grouped = []
+        curr = []
+        for line in lines:
+            is_start = any(k in line for k in card_kws) or '[Web발신]' in line or re.match(r'^(?:\d{4}[./\-])?\d{1,2}[./\-]\d{1,2}', line)
+            has_amount_in_curr = any(re.search(r'[0-9,]+\s*원|(?:^|\s)[0-9]{1,3}(?:,[0-9]{3})+', c) for c in curr)
+            if curr and is_start and has_amount_in_curr:
+                grouped.append('\n'.join(curr))
+                curr = [line]
+            else:
+                curr.append(line)
+        if curr:
+            grouped.append('\n'.join(curr))
+        if len(grouped) > 1:
+            return grouped
+
+    return [clean]
+
+
 @app.route('/api/card-tx/webhook', methods=['GET', 'POST'])
 def api_card_tx_webhook():
     """
-    모바일 SMS / 앱 푸시 알림 자동 수신 웹훅
+    모바일 SMS / 앱 푸시 알림 자동 수신 웹훅 (단일 및 다중 건 일괄 등록 지원)
     """
     if request.method == 'GET':
         return jsonify({
@@ -439,34 +497,35 @@ def api_card_tx_webhook():
     if not raw_message:
         return jsonify({'ok': False, 'error': '문자 내용(message)이 필요합니다.'}), 400
         
-    parsed = parse_card_sms(raw_message)
-    if not parsed or parsed.get('amount') is None:
-        return jsonify({'ok': False, 'error': '문자에서 결제 금액을 분석하지 못했습니다.', 'parsed': parsed}), 422
-        
+    messages = split_sms_messages(raw_message)
+    results = []
+    failed = []
     db = get_db()
-    card_id = data.get('card_id') or find_matching_card_id(db, parsed.get('card_company'))
-    merchant_name = parsed.get('name') or '카드결제'
-    amount = parsed.get('amount')
-    tx_date = parsed.get('date')
-    installment = parsed.get('installment', 1)
-    card_comp = parsed.get('card_company') or '카드'
-    memo = f"[자동등록] {card_comp}".strip()
-    
-    category = _get_category_hint(db, merchant_name) or ''
-    fund_group_id = _get_fund_group_hint(db, merchant_name)
-    
-    db.execute(
-        "INSERT INTO card_tx (card_id, date, name, category, amount, installment, memo, category_locked, fund_group_id, fund_group_locked) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, 0)",
-        (card_id, tx_date, merchant_name, category, amount, installment, memo, fund_group_id)
-    )
-    db.commit()
-    db.close()
-    
-    return jsonify({
-        'ok': True,
-        'message': '카드 거래내역이 성공적으로 등록되었습니다.',
-        'data': {
+
+    for msg in messages:
+        parsed = parse_card_sms(msg)
+        if not parsed or parsed.get('amount') is None:
+            failed.append({'message': msg, 'reason': '금액 분석 실패'})
+            continue
+            
+        card_id = data.get('card_id') or find_matching_card_id(db, parsed.get('card_company'))
+        merchant_name = parsed.get('name') or '카드결제'
+        amount = parsed.get('amount')
+        tx_date = parsed.get('date')
+        installment = parsed.get('installment', 1)
+        card_comp = parsed.get('card_company') or '카드'
+        memo = f"[자동등록] {card_comp}".strip()
+        
+        category = _get_category_hint(db, merchant_name) or ''
+        fund_group_id = _get_fund_group_hint(db, merchant_name)
+        
+        db.execute(
+            "INSERT INTO card_tx (card_id, date, name, category, amount, installment, memo, category_locked, fund_group_id, fund_group_locked) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, 0)",
+            (card_id, tx_date, merchant_name, category, amount, installment, memo, fund_group_id)
+        )
+        
+        results.append({
             'card_id': card_id,
             'card_company': parsed.get('card_company'),
             'date': tx_date,
@@ -474,7 +533,21 @@ def api_card_tx_webhook():
             'amount': amount,
             'category': category,
             'installment': installment
-        }
+        })
+
+    db.commit()
+    db.close()
+
+    if not results:
+        return jsonify({'ok': False, 'error': '문자에서 결제 정보를 분석하지 못했습니다.', 'failed': failed}), 422
+
+    return jsonify({
+        'ok': True,
+        'message': f'총 {len(results)}건의 카드 거래내역이 성공적으로 등록되었습니다.',
+        'count': len(results),
+        'results': results,
+        'failed_count': len(failed),
+        'data': results[0] if results else {}
     }), 201
 
 

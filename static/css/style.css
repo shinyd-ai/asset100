@@ -387,6 +387,74 @@ body {
   padding-top: 0;
 }
 
+/* 카드 거래내역 좌우 분할 레이아웃 */
+.tx-split-layout {
+  display: flex;
+  align-items: stretch;
+  gap: 0.75rem;
+}
+
+.tx-split-main {
+  flex: 0 0 68%;
+  min-width: 0;
+}
+
+.tx-split-side {
+  flex: 1 1 auto;
+  min-width: 300px;
+}
+
+.tx-split-resizer {
+  flex: 0 0 12px;
+  align-self: stretch;
+  cursor: col-resize;
+  position: relative;
+  border-radius: 6px;
+}
+
+.tx-split-resizer::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 3px;
+  transform: translateX(-50%);
+  border-radius: 999px;
+  background: #dee2e6;
+  transition: background-color 0.15s ease, width 0.15s ease;
+}
+
+.tx-split-resizer:hover::before,
+.tx-split-dragging .tx-split-resizer::before {
+  width: 4px;
+  background: #0d6efd;
+}
+
+.tx-split-dragging {
+  cursor: col-resize !important;
+  user-select: none;
+}
+
+@media (max-width: 991.98px) {
+  .tx-split-layout {
+    display: block;
+  }
+
+  .tx-split-main,
+  .tx-split-side {
+    min-width: 0;
+  }
+
+  .tx-split-side {
+    margin-top: 1rem;
+  }
+
+  .tx-split-resizer {
+    display: none;
+  }
+}
+
 /* 컨텍스트 메뉴 스타일 (기존 유지 및 보정) */
 #txContextMenu {
   min-width: 220px;

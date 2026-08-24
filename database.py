@@ -290,6 +290,9 @@ def init_db():
         "ALTER TABLE card_tx  ADD COLUMN IF NOT EXISTS category_locked   INTEGER DEFAULT 0",
         "ALTER TABLE card_tx  ADD COLUMN IF NOT EXISTS fund_group_id     INTEGER REFERENCES fund_groups(id)",
         "ALTER TABLE card_tx  ADD COLUMN IF NOT EXISTS fund_group_locked INTEGER DEFAULT 0",
+        "ALTER TABLE stock_tx ADD COLUMN IF NOT EXISTS external_source   TEXT",
+        "ALTER TABLE stock_tx ADD COLUMN IF NOT EXISTS external_id       TEXT",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_stock_tx_external ON stock_tx(external_source, external_id) WHERE external_source IS NOT NULL AND external_id IS NOT NULL",
         # 기본 카테고리 삽입 (INSERT OR IGNORE -> ON CONFLICT DO NOTHING)
         *[f"INSERT INTO categories (name, sort_order) VALUES ('{n}', {i}) ON CONFLICT (name) DO NOTHING"
           for i, n in enumerate(['식비', '쇼핑', '교통', '의료', '문화', '기타'])],

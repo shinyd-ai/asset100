@@ -66,7 +66,13 @@ class GridTable {
         return;
       }
       const tr = e.target.closest('tr[data-id]');
-      if (tr && tr !== this._tr) this.startEdit(tr);
+      if (tr && tr !== this._tr) {
+        if (this._tr) {
+          this._focusEditingRow();
+          return;
+        }
+        this.startEdit(tr);
+      }
     });
 
     // 헤더 필터 이벤트
@@ -78,16 +84,21 @@ class GridTable {
       }
     });
 
-    // click outside → cancel / close popup
+    // click outside → close popup. Editing is closed only by save/cancel/Escape.
     this._ignoreDocClick = false;
     document.addEventListener('click', e => {
       if (this._ignoreDocClick) return;
-      if (this._tr && !this.tableEl.contains(e.target)) this.cancelEdit();
       
       // 필터 팝업 닫기
       if (!e.target.closest('.filter-popup') && !e.target.closest('.th-filter')) {
         this.tableEl.querySelectorAll('.filter-popup').forEach(p => p.classList.remove('show'));
       }
+    });
+
+    document.addEventListener('keydown', e => {
+      if (e.key !== 'Escape' || !this._tr) return;
+      e.preventDefault();
+      this.cancelEdit();
     });
   }
 
@@ -330,7 +341,10 @@ class GridTable {
   }
 
   startEdit(tr) {
-    if (this._tr) this.cancelEdit();
+    if (this._tr) {
+      this._focusEditingRow();
+      return;
+    }
     this._tr = tr;
     const id = tr.dataset.id;
     const r  = id === 'new' ? {} : (this.rows.find(x => String(x.id) === id) || {});
@@ -361,6 +375,12 @@ class GridTable {
     // 이 클릭 이벤트가 document까지 버블링되어 즉시 cancelEdit 되는 것을 방지
     this._ignoreDocClick = true;
     setTimeout(() => { this._ignoreDocClick = false; }, 0);
+  }
+
+  _focusEditingRow() {
+    if (!this._tr) return;
+    this._tr.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    this._tr.querySelector('input,select')?.focus();
   }
 
   cancelEdit() {
@@ -395,7 +415,11 @@ class GridTable {
   }
 
   async _delete(id) {
-    if (this._tr) this.cancelEdit();
+    if (this._tr) {
+      alert('작성 중인 행을 먼저 저장하거나 취소해 주세요.');
+      this._focusEditingRow();
+      return;
+    }
     if (!confirm('삭제하시겠습니까?')) return;
     await fetchJSON(`${this.apiUrl}/${id}`, { method: 'DELETE' });
     await this.load();
@@ -403,7 +427,11 @@ class GridTable {
   }
 
   addRow() {
-    if (this._tr) this.cancelEdit();
+    if (this._tr) {
+      alert('작성 중인 행을 먼저 저장하거나 취소해 주세요.');
+      this._focusEditingRow();
+      return;
+    }
     const tr = document.createElement('tr');
     tr.dataset.id = 'new';
     this.tbody.insertBefore(tr, this.tbody.firstChild);

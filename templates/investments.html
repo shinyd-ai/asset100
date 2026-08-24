@@ -4,9 +4,14 @@
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
   <h2 class="fw-bold mb-0"><i class="bi bi-graph-up-arrow me-2 text-primary"></i>투자 관리</h2>
-  <button id="btn-sync-prices" class="btn btn-primary" onclick="syncPrices()">
-    <i class="bi bi-arrow-clockwise me-1"></i>실시간 가격 업데이트
-  </button>
+  <div class="d-flex gap-2">
+    <button id="btn-sync-toss" class="btn btn-outline-primary" onclick="syncTossStockTx()">
+      <i class="bi bi-download me-1"></i>토스 매매내역 가져오기
+    </button>
+    <button id="btn-sync-prices" class="btn btn-primary" onclick="syncPrices()">
+      <i class="bi bi-arrow-clockwise me-1"></i>실시간 가격 업데이트
+    </button>
+  </div>
 </div>
 
 <!-- 로딩 스피너 (초기 비활성) -->
@@ -66,6 +71,31 @@
       </div>
     </div>
 
+    <!-- 월별 매수 비중 비교 -->
+    <div class="card border-0 shadow-sm mb-3">
+      <div class="card-header bg-white border-0 pt-3 pb-2 d-flex justify-content-between align-items-center">
+        <span class="fw-semibold"><i class="bi bi-grid-3x3-gap me-2 text-success"></i>월별 매수 비중 비교</span>
+        <div class="d-flex gap-2 align-items-center">
+          <select id="monthlyBuyMonths" class="form-select form-select-sm" style="width:auto" onchange="loadMonthlyBuyComparison()">
+            <option value="3">최근 3개월</option>
+            <option value="6" selected>최근 6개월</option>
+            <option value="12">최근 12개월</option>
+          </select>
+          <button class="btn btn-sm btn-outline-secondary" onclick="loadMonthlyBuyComparison()">조회</button>
+        </div>
+      </div>
+      <div class="card-body p-0">
+        <div class="table-responsive">
+          <table class="table table-sm table-hover align-middle mb-0" id="monthlyBuyTable">
+            <thead class="table-light"></thead>
+            <tbody>
+              <tr><td class="text-muted text-center py-4">월별 매수 비중을 불러오는 중입니다.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
     <!-- 거래내역 -->
     <div class="card border-0 shadow-sm">
       <div class="card-header bg-white border-0 pt-3 pb-2 d-flex justify-content-between align-items-center">
@@ -74,6 +104,13 @@
           <select id="txStockFilter" class="form-select form-select-sm" style="width:auto" onchange="stockTxGrid.load()">
             <option value="">전체 종목</option>
           </select>
+          <select id="stockTxRange" class="form-select form-select-sm" style="width:auto" onchange="onStockTxRangeChange()">
+            <option value="all">전체 거래</option>
+            <option value="month">월별 조회</option>
+          </select>
+          <select id="stockTxYear" class="form-select form-select-sm d-none" style="width:auto"></select>
+          <select id="stockTxMonth" class="form-select form-select-sm d-none" style="width:auto"></select>
+          <button id="stockTxSearchBtn" class="btn btn-sm btn-outline-secondary d-none" onclick="stockTxGrid.load()">조회</button>
           <button class="btn btn-primary btn-sm" onclick="stockTxGrid.addRow()">
             <i class="bi bi-plus-lg me-1"></i>거래 입력
           </button>
@@ -169,6 +206,8 @@
 {% block scripts %}
 <script>
 let allStocks = [];
+const today = new Date();
+initYearMonthFilters('stockTxYear', 'stockTxMonth', today.getFullYear(), today.getMonth() + 1);
 
 function pnlHtml(v) {
   if (v == null || isNaN(v)) return '-';
@@ -205,10 +244,112 @@ async function syncPrices() {
   }
 }
 
+async function syncTossStockTx() {
+  const btn = document.getElementById('btn-sync-toss');
+  if (!confirm('토스증권 매매 거래내역을 가져오시겠습니까?')) return;
+
+  btn.disabled = true;
+  const originalText = btn.innerHTML;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>가져오는 중';
+
+  try {
+    const res = await fetch('/api/investments/toss/sync-stock-tx', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({}),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.ok) {
+      alert(data.error || '토스증권 매매내역을 가져오지 못했습니다.');
+      return;
+    }
+    alert(
+      `토스증권 매매내역 가져오기 완료!\n` +
+      `- 조회: ${data.fetched}건\n` +
+      `- 신규 거래: ${data.inserted}건\n` +
+      `- 중복 건너뜀: ${data.duplicate}건\n` +
+      `- 제외: ${data.skipped}건\n` +
+      `- 신규 종목: ${data.created_stocks}건`
+    );
+    await stockGrid.load();
+  } catch (e) {
+    alert('토스증권 동기화 중 오류가 발생했습니다.');
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = originalText;
+  }
+}
+
 function rateHtml(pct) {
   if (pct == null || isNaN(pct)) return '-';
   const cls = pct > 0 ? 'text-danger' : pct < 0 ? 'text-primary' : 'text-muted';
   return `<span class="${cls} fw-semibold">${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%</span>`;
+}
+
+function escapeHtml(v) {
+  return String(v ?? '').replace(/[&<>"']/g, ch => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  }[ch]));
+}
+
+async function loadMonthlyBuyComparison() {
+  const table = document.getElementById('monthlyBuyTable');
+  const monthsCount = document.getElementById('monthlyBuyMonths').value || '6';
+  const data = await fetchJSON(`/api/stock-tx/monthly-buy-comparison?months=${encodeURIComponent(monthsCount)}`);
+  if (!data) {
+    table.querySelector('thead').innerHTML = '';
+    table.querySelector('tbody').innerHTML =
+      '<tr><td class="text-danger text-center py-4">월별 매수 비중을 불러오지 못했습니다.</td></tr>';
+    return;
+  }
+  renderMonthlyBuyComparison(data);
+}
+
+function renderMonthlyBuyComparison(data) {
+  const table = document.getElementById('monthlyBuyTable');
+  const months = data.months || [];
+  const stocks = data.stocks || [];
+  const totals = data.totals || {};
+  const colCount = months.length + 2;
+
+  table.querySelector('thead').innerHTML = `
+    <tr>
+      <th style="min-width:160px">종목</th>
+      <th style="min-width:90px">티커</th>
+      ${months.map(m => `<th class="text-end" style="min-width:130px">${escapeHtml(m)}</th>`).join('')}
+    </tr>`;
+
+  if (!stocks.length) {
+    table.querySelector('tbody').innerHTML =
+      `<tr><td colspan="${colCount}" class="text-muted text-center py-4">선택 기간에 매수 거래가 없습니다.</td></tr>`;
+    return;
+  }
+
+  const stockRows = stocks.map(stock => {
+    const cells = months.map(month => {
+      const item = stock.months?.[month];
+      if (!item || !item.amount) return '<td class="text-end text-muted">-</td>';
+      return `
+        <td class="text-end">
+          <div class="fw-semibold">${fmt(item.amount)}원</div>
+          <div class="small text-muted">${Number(item.ratio || 0).toFixed(1)}%</div>
+        </td>`;
+    }).join('');
+    return `
+      <tr>
+        <td class="fw-semibold">${escapeHtml(stock.name || '-')}</td>
+        <td class="text-muted">${escapeHtml(stock.ticker || '-')}</td>
+        ${cells}
+      </tr>`;
+  }).join('');
+
+  const totalRow = `
+    <tr class="table-light fw-semibold">
+      <td colspan="2">월 합계</td>
+      ${months.map(month => `<td class="text-end">${totals[month] ? fmt(totals[month]) + '원' : '-'}</td>`).join('')}
+    </tr>`;
+
+  table.querySelector('tbody').innerHTML = stockRows + totalRow;
 }
 
 // ── 주식 포지션 ──
@@ -247,8 +388,17 @@ const stockGrid = new GridTable({
     document.getElementById('stocks-profit').innerHTML   = pnlHtml(tp);
     document.getElementById('stocks-realized').innerHTML = pnlHtml(tr);
     stockTxGrid.load();
+    loadMonthlyBuyComparison();
   },
 });
+
+function onStockTxRangeChange() {
+  const isMonth = document.getElementById('stockTxRange').value === 'month';
+  document.getElementById('stockTxYear').classList.toggle('d-none', !isMonth);
+  document.getElementById('stockTxMonth').classList.toggle('d-none', !isMonth);
+  document.getElementById('stockTxSearchBtn').classList.toggle('d-none', !isMonth);
+  stockTxGrid.load();
+}
 
 // ── 주식 거래내역 ──
 const stockTxGrid = new GridTable({
@@ -272,8 +422,14 @@ const stockTxGrid = new GridTable({
   ],
   apiUrl: '/api/stock-tx',
   getQueryParams: () => {
+    const params = new URLSearchParams();
     const sid = document.getElementById('txStockFilter').value;
-    return sid ? `stock_id=${sid}` : '';
+    if (sid) params.set('stock_id', sid);
+    if (document.getElementById('stockTxRange').value === 'month') {
+      params.set('year', document.getElementById('stockTxYear').value);
+      params.set('month', document.getElementById('stockTxMonth').value);
+    }
+    return params.toString();
   },
   onLoad: () => {},
   onSave:   () => stockGrid.load(),
