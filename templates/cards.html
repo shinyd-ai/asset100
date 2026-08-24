@@ -12,6 +12,7 @@
   <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#tab-excel">엑셀 가져오기</a></li>
   <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#tab-rules">카테고리 규칙</a></li>
   <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#tab-categories">카테고리 관리</a></li>
+  <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#tab-webhook"><i class="bi bi-phone me-1"></i>문자/푸시 자동등록</a></li>
 </ul>
 
 <div class="tab-content">
@@ -209,7 +210,116 @@
     </div>
   </div>
 
-  <!-- 거래내역 탭 -->
+  <!-- 문자/웹훅 자동등록 탭 -->
+  <div class="tab-pane fade" id="tab-webhook">
+    <div class="row g-4">
+      <!-- 1. 웹훅 정보 및 모바일 앱 설정 가이드 -->
+      <div class="col-lg-7">
+        <div class="card border-0 shadow-sm mb-4">
+          <div class="card-header bg-white border-0 pt-3 fw-bold">
+            <i class="bi bi-broadcast text-primary me-2"></i>모바일 문자(SMS) / 앱 푸시 자동 연동 설정
+          </div>
+          <div class="card-body">
+            <p class="text-muted small mb-3">
+              안드로이드 스마트폰에 자동화 앱(<strong>MacroDroid</strong>, <strong>SmsForwarder</strong> 등)을 설치하면,
+              <strong>현대 / 삼성 / 롯데 / 하나카드</strong> 결제 문자가 올 때마다 즉시 가계부 DB에 자동 기록됩니다.
+            </p>
+
+            <div class="mb-3">
+              <label class="form-label small fw-semibold text-muted">수신 웹훅 URL (Webhook Endpoint)</label>
+              <div class="input-group">
+                <input type="text" class="form-control font-monospace bg-light" id="webhookUrlInput"
+                  value="https://asset100.onrender.com/api/card-tx/webhook" readonly>
+                <button class="btn btn-outline-secondary" onclick="copyWebhookText('webhookUrlInput', this)">
+                  <i class="bi bi-clipboard me-1"></i>URL 복사
+                </button>
+              </div>
+            </div>
+
+            <div class="mb-3">
+              <label class="form-label small fw-semibold text-muted">인증키 (API Key)</label>
+              <div class="input-group">
+                <input type="text" class="form-control font-monospace bg-light" id="webhookKeyInput"
+                  value="asset100_secret_2026" readonly>
+                <button class="btn btn-outline-secondary" onclick="copyWebhookText('webhookKeyInput', this)">
+                  <i class="bi bi-clipboard me-1"></i>키 복사
+                </button>
+              </div>
+              <div class="form-text small">※ Render 환경변수 <code>WEBHOOK_API_KEY</code>로 원하는 비밀키로 변경 가능합니다.</div>
+            </div>
+
+            <hr class="my-3">
+
+            <h6 class="fw-bold mb-2"><i class="bi bi-phone me-1 text-success"></i>MacroDroid 간편 설정법 (3분)</h6>
+            <ol class="small text-muted ps-3 mb-0" style="line-height: 1.7;">
+              <li>플레이스토어에서 <strong>MacroDroid</strong> 앱 설치</li>
+              <li><strong>매크로 추가</strong> 클릭</li>
+              <li><strong>트리거(+)</strong>: <code>메시지</code> &rarr; <code>SMS 수신</code> &rarr; 내용 포함: <code>승인</code>, <code>카드</code>, <code>결제</code> (또는 <code>기기 이벤트</code> &rarr; <code>알림 수신</code>에서 카드사 앱 선택)</li>
+              <li><strong>작업(+)</strong>: <code>웹</code> &rarr; <code>HTTP 요청</code>
+                <ul class="ps-3 mt-1">
+                  <li><strong>요청 방식</strong>: <code>POST</code></li>
+                  <li><strong>URL</strong>: <code>https://asset100.onrender.com/api/card-tx/webhook</code></li>
+                  <li><strong>콘텐츠 유형</strong>: <code>application/json</code></li>
+                  <li><strong>요청 본문(Body)</strong>:
+                    <pre class="bg-light p-2 rounded mt-1 mb-1 font-monospace" style="font-size:0.75rem;">{"message": "{sms_message}", "api_key": "asset100_secret_2026"}</pre>
+                    <small class="text-muted">(알림 푸시인 경우 <code>{notification_text}</code> 또는 <code>{notification_big_text}</code>)</small>
+                  </li>
+                </ul>
+              </li>
+              <li>매크로 저장 완료! 이제 카드를 결제하면 자동으로 가계부에 실시간 등록됩니다.</li>
+            </ol>
+          </div>
+        </div>
+      </div>
+
+      <!-- 2. 문자 직접 파싱 및 등록 테스트기 -->
+      <div class="col-lg-5">
+        <div class="card border-0 shadow-sm">
+          <div class="card-header bg-white border-0 pt-3 fw-bold">
+            <i class="bi bi-magic text-warning me-2"></i>문자 파싱 & 즉시 등록 테스트
+          </div>
+          <div class="card-body">
+            <p class="text-muted small mb-2">스마트폰으로 받은 카드 결제 문자를 여기에 붙여넣고 테스트해보세요.</p>
+            
+            <div class="mb-2">
+              <label class="form-label small fw-semibold text-muted">샘플 예시 불러오기</label>
+              <div class="d-flex gap-1 flex-wrap">
+                <button type="button" class="btn btn-xs btn-outline-secondary btn-sm py-0" onclick="loadSampleSms('hyundai')">현대카드</button>
+                <button type="button" class="btn btn-xs btn-outline-secondary btn-sm py-0" onclick="loadSampleSms('samsung')">삼성카드</button>
+                <button type="button" class="btn btn-xs btn-outline-secondary btn-sm py-0" onclick="loadSampleSms('lotte')">롯데카드</button>
+                <button type="button" class="btn btn-xs btn-outline-secondary btn-sm py-0" onclick="loadSampleSms('hana')">하나카드</button>
+              </div>
+            </div>
+
+            <div class="mb-3">
+              <textarea id="testSmsText" class="form-control font-monospace" rows="5"
+                placeholder="[현대카드] 08/24 13:20 15,400원(일시불) 스타벅스 승인"></textarea>
+            </div>
+
+            <button class="btn btn-primary w-100 fw-semibold mb-3" onclick="submitSmsWebhookTest()">
+              <i class="bi bi-arrow-right-circle me-1"></i>문자 분석 및 거래 등록
+            </button>
+
+            <!-- 결과 표시창 -->
+            <div id="smsTestResult" style="display:none;" class="p-3 rounded bg-light border">
+              <h6 class="fw-bold mb-2" id="smsResultTitle">분석 결과</h6>
+              <table class="table table-sm table-borderless small mb-0">
+                <tr><th style="width:70px;" class="text-muted">카드사</th><td id="resCard" class="fw-bold">-</td></tr>
+                <tr><th class="text-muted">사용일자</th><td id="resDate">-</td></tr>
+                <tr><th class="text-muted">가맹점</th><td id="resName" class="fw-bold text-primary">-</td></tr>
+                <tr><th class="text-muted">결제금액</th><td id="resAmount" class="fw-bold text-danger">-</td></tr>
+                <tr><th class="text-muted">할부</th><td id="resInstallment">-</td></tr>
+                <tr><th class="text-muted">카테고리</th><td id="resCategory"><span class="badge bg-secondary">-</span></td></tr>
+              </table>
+              <div id="smsSuccessAlert" class="alert alert-success py-1 px-2 small mt-2 mb-0" style="display:none;">
+                <i class="bi bi-check-circle-fill me-1"></i>성공적으로 등록되었습니다! 거래내역 탭에서 확인하세요.
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
   <div class="tab-pane fade" id="tab-tx">
     <div class="card border-0 shadow-sm mb-3">
       <div class="card-body py-2">
@@ -1151,6 +1261,78 @@ function resetUpload(keepError = false) {
   document.getElementById('xl-step3').style.display = 'none';
   document.getElementById('xl-step1').style.display = '';
   if (!keepError) document.getElementById('xlError').style.display = 'none';
+}
+
+function copyWebhookText(elemId, btn) {
+  const input = document.getElementById(elemId);
+  if (!input) return;
+  navigator.clipboard.writeText(input.value).then(() => {
+    const orig = btn.innerHTML;
+    btn.innerHTML = '<i class="bi bi-check-lg me-1 text-success"></i>복사됨!';
+    setTimeout(() => { btn.innerHTML = orig; }, 2000);
+  });
+}
+
+function loadSampleSms(type) {
+  const samples = {
+    hyundai: '[Web발신]\n현대카드 김*수님\n08/24 13:20 15,400원(일시불)\n스타벅스 강남점 승인\n누적: 340,000원',
+    samsung: '[Web발신]\n삼성카드 08/24 14:10\n25,000원 일시불\n파리바게뜨 승인',
+    lotte: '[Web발신]\n[롯데카드] 08/24 15:30\n18,000원 일시불\n배달의민족 승인',
+    hana: '[Web발신]\n[하나카드] 김*수님\n08/24 12:40 일시불\n9,500원 메가커피 승인'
+  };
+  document.getElementById('testSmsText').value = samples[type] || '';
+}
+
+async function submitSmsWebhookTest() {
+  const text = document.getElementById('testSmsText').value.trim();
+  if (!text) {
+    alert('문자 내용을 입력해주세요.');
+    return;
+  }
+  const apiKey = document.getElementById('webhookKeyInput').value.trim();
+  
+  try {
+    const res = await fetch('/api/card-tx/webhook', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-API-KEY': apiKey
+      },
+      body: JSON.stringify({
+        message: text,
+        api_key: apiKey,
+        is_test: true
+      })
+    });
+    const data = await res.json();
+    const resultBox = document.getElementById('smsTestResult');
+    const alertBox = document.getElementById('smsSuccessAlert');
+    resultBox.style.display = 'block';
+    
+    if (res.ok && data.ok) {
+      const d = data.data || {};
+      document.getElementById('resCard').textContent = d.card_company || '자동매칭';
+      document.getElementById('resDate').textContent = d.date || '-';
+      document.getElementById('resName').textContent = d.name || '-';
+      document.getElementById('resAmount').textContent = Number(d.amount || 0).toLocaleString() + '원';
+      document.getElementById('resInstallment').textContent = (d.installment && d.installment > 1) ? d.installment + '개월' : '일시불';
+      document.getElementById('resCategory').innerHTML = `<span class="badge bg-primary">${d.category || '미분류'}</span>`;
+      
+      alertBox.style.display = 'block';
+      alertBox.className = 'alert alert-success py-1 px-2 small mt-2 mb-0';
+      alertBox.innerHTML = '<i class="bi bi-check-circle-fill me-1"></i>성공적으로 DB에 등록되었습니다! 거래내역 탭에서 확인하세요.';
+      
+      if (typeof txGrid !== 'undefined' && txGrid.load) {
+        txGrid.load();
+      }
+    } else {
+      alertBox.style.display = 'block';
+      alertBox.className = 'alert alert-danger py-1 px-2 small mt-2 mb-0';
+      alertBox.innerHTML = `<i class="bi bi-exclamation-triangle-fill me-1"></i>파싱 실패: ${data.error || '분석할 수 없는 문자 형식입니다.'}`;
+    }
+  } catch (err) {
+    alert('오류 발생: ' + err.message);
+  }
 }
 </script>
 {% endblock %}

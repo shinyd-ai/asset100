@@ -294,6 +294,190 @@ def api_card_tx():
     return jsonify({'ok': True}), 201
 
 
+def parse_card_sms(text):
+    """
+    현대, 삼성, 롯데, 하나 및 주요 카드사 결제 문자/푸시 알림 자동 파싱
+    """
+    if not text:
+        return None
+    clean_text = text.strip()
+    is_cancel = any(k in clean_text for k in ['취소', '승인취소', '결제취소', '승인 취소', '결제 취소'])
+    
+    # 1. 카드사 판별
+    card_company = ''
+    company_keywords = [
+        ('현대카드', ['현대카드', '현대']),
+        ('삼성카드', ['삼성카드', '삼성']),
+        ('롯데카드', ['롯데카드', '롯데']),
+        ('하나카드', ['하나카드', '하나']),
+        ('KB국민카드', ['KB국민', '국민카드', 'KB']),
+        ('신한카드', ['신한카드', '신한']),
+        ('우리카드', ['우리카드', '우리']),
+        ('NH농협카드', ['NH농협', '농협카드', 'NH카드', '농협']),
+        ('카카오페이', ['카카오페이']),
+        ('카카오뱅크', ['카카오뱅크']),
+        ('토스', ['토스뱅크', '토스']),
+        ('BC카드', ['BC카드', '비씨카드', 'BC'])
+    ]
+    for comp_name, kws in company_keywords:
+        if any(kw in clean_text for kw in kws):
+            card_company = comp_name
+            break
+
+    # 2. 금액 추출 (누적/잔여/한도 패턴 제거 후 금액 탐색)
+    amount = None
+    text_wo_balance = re.sub(r'(?:누적|잔여|잔액|한도)\s*[:\-]?[0-9,]+원?', '', clean_text)
+    amt_match = re.search(r'([0-9]{1,3}(?:,[0-9]{3})+|[0-9]+)\s*원', text_wo_balance)
+    if amt_match:
+        amount_str = amt_match.group(1).replace(',', '')
+        try:
+            amount = int(amount_str)
+            if is_cancel:
+                amount = -abs(amount)
+        except ValueError:
+            amount = None
+
+    # 3. 날짜 추출 (YYYY-MM-DD)
+    current_year = datetime.now().year
+    tx_date = datetime.now().strftime('%Y-%m-%d')
+    date_match = re.search(r'(?:(\d{4})[./\-])?(\d{1,2})[./\-](\d{1,2})(?:\s+(\d{1,2}:\d{2}(?::\d{2})?))?', clean_text)
+    if date_match:
+        y = date_match.group(1) or str(current_year)
+        m = date_match.group(2).zfill(2)
+        d = date_match.group(3).zfill(2)
+        tx_date = f'{y}-{m}-{d}'
+
+    # 4. 할부 개월 수 추출
+    installment = 1
+    if '일시불' in clean_text:
+        installment = 1
+    else:
+        inst_match = re.search(r'(\d+)\s*개월', clean_text)
+        if inst_match:
+            installment = int(inst_match.group(1))
+
+    # 5. 가맹점명(사용처) 추출
+    tokens_to_remove = [
+        r'\[Web발신\]', r'\[\s*[^\]]+\s*\]',
+        r'[가-힣A-Za-z0-9]+\([0-9*]+\)',
+        r'\([0-9*]+\)',
+        r'현대카드', r'삼성카드', r'롯데카드', r'하나카드', r'KB국민카드', r'국민카드', r'신한카드', r'우리카드', r'NH농협카드', r'카카오페이', r'카카오뱅크', r'토스뱅크',
+        r'[가-힣]\*[가-힣]님', r'[가-힣]+님',
+        r'(?:[0-9]{1,3}(?:,[0-9]{3})+|[0-9]+)\s*원',
+        r'(?:\d{4}[./\-])?\d{1,2}[./\-]\d{1,2}(?:\s+\d{1,2}:\d{2}(?::\d{2})?)?',
+        r'\d{1,2}:\d{2}(?::\d{2})?',
+        r'\(?\s*일시불\s*\)?', r'\(?\s*\d+\s*개월\s*\)?',
+        r'승인취소', r'승인', r'결제', r'취소', r'출금', r'입금', r'체크',
+        r'누적\s*[:\-]?(?:\s*[0-9,]+원?)?', r'잔여\s*[:\-]?(?:\s*[0-9,]+원?)?', r'잔액\s*[:\-]?(?:\s*[0-9,]+원?)?', r'한도\s*[:\-]?(?:\s*[0-9,]+원?)?'
+    ]
+    temp_text = clean_text
+    for pat in tokens_to_remove:
+        temp_text = re.sub(pat, ' ', temp_text)
+    
+    cleaned_tokens = [tok.strip(' :-,()[]') for tok in re.split(r'[\s\n\r]+', temp_text) if tok.strip(' :-,()[]') and tok.strip(' :-,()[]') not in ['님', '원', '누적', '잔여', '잔액', '한도']]
+    merchant = ' '.join(cleaned_tokens).strip(' :-,()[]') if cleaned_tokens else '카드사용'
+
+    return {
+        'card_company': card_company,
+        'amount': amount,
+        'date': tx_date,
+        'name': merchant,
+        'installment': installment,
+        'is_cancel': is_cancel,
+        'raw': clean_text
+    }
+
+
+def find_matching_card_id(db, card_company):
+    """카드사 이름으로 등록된 카드 ID 매칭"""
+    rows = db.execute("SELECT id, card_name FROM card_info").fetchall()
+    if not rows:
+        return None
+    if not card_company:
+        return rows[0]['id']
+    
+    for row in rows:
+        cname = row['card_name'] or ''
+        if card_company in cname:
+            return row['id']
+            
+    keywords = ['현대', '삼성', '롯데', '하나', '국민', '신한', '우리', '농협', '카카오', '토스', '비씨', 'BC']
+    matched_kws = [k for k in keywords if k in card_company]
+    if matched_kws:
+        kw = matched_kws[0]
+        for row in rows:
+            if kw in (row['card_name'] or ''):
+                return row['id']
+                
+    return rows[0]['id']
+
+
+@app.route('/api/card-tx/webhook', methods=['GET', 'POST'])
+def api_card_tx_webhook():
+    """
+    모바일 SMS / 앱 푸시 알림 자동 수신 웹훅
+    """
+    if request.method == 'GET':
+        return jsonify({
+            'status': 'active',
+            'endpoint': '/api/card-tx/webhook',
+            'supported_cards': ['현대카드', '삼성카드', '롯데카드', '하나카드', '국민카드', '신한카드', '우리카드', '농협카드', '카카오뱅크', '토스']
+        })
+
+    webhook_secret = os.getenv('WEBHOOK_API_KEY', 'asset100_secret_2026')
+    client_key = request.headers.get('X-API-KEY') or request.args.get('key')
+    
+    data = request.get_json(silent=True) or {}
+    if not client_key and 'api_key' in data:
+        client_key = data.get('api_key')
+        
+    is_web_test = data.get('is_test', False)
+    if webhook_secret and not is_web_test and client_key != webhook_secret:
+        return jsonify({'ok': False, 'error': '유효하지 않은 API 인증키입니다 (Invalid API key)'}), 401
+        
+    raw_message = data.get('message') or data.get('text') or data.get('body') or request.form.get('message') or ''
+    if not raw_message:
+        return jsonify({'ok': False, 'error': '문자 내용(message)이 필요합니다.'}), 400
+        
+    parsed = parse_card_sms(raw_message)
+    if not parsed or parsed.get('amount') is None:
+        return jsonify({'ok': False, 'error': '문자에서 결제 금액을 분석하지 못했습니다.', 'parsed': parsed}), 422
+        
+    db = get_db()
+    card_id = data.get('card_id') or find_matching_card_id(db, parsed.get('card_company'))
+    merchant_name = parsed.get('name') or '카드결제'
+    amount = parsed.get('amount')
+    tx_date = parsed.get('date')
+    installment = parsed.get('installment', 1)
+    card_comp = parsed.get('card_company') or '카드'
+    memo = f"[자동등록] {card_comp}".strip()
+    
+    category = _get_category_hint(db, merchant_name) or ''
+    fund_group_id = _get_fund_group_hint(db, merchant_name)
+    
+    db.execute(
+        "INSERT INTO card_tx (card_id, date, name, category, amount, installment, memo, category_locked, fund_group_id, fund_group_locked) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, 0)",
+        (card_id, tx_date, merchant_name, category, amount, installment, memo, fund_group_id)
+    )
+    db.commit()
+    db.close()
+    
+    return jsonify({
+        'ok': True,
+        'message': '카드 거래내역이 성공적으로 등록되었습니다.',
+        'data': {
+            'card_id': card_id,
+            'card_company': parsed.get('card_company'),
+            'date': tx_date,
+            'name': merchant_name,
+            'amount': amount,
+            'category': category,
+            'installment': installment
+        }
+    }), 201
+
+
 @app.route('/api/card-tx/<int:rid>', methods=['PUT', 'DELETE'])
 def api_card_tx_detail(rid):
     db = get_db()
