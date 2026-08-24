@@ -413,19 +413,19 @@ def find_matching_card_id(db, card_company):
 
 
 def parse_statement_table(text):
-    """카드사 웹사이트/명세서 복사-붙여넣기 테이블 자동 파싱"""
+    """카드사 웹사이트/명세서 복사-붙여넣기 테이블 자동 파싱 (롯데, 하나, 현대, 삼성 등)"""
     if not text:
         return []
         
     card_company = ''
-    if '하나' in text or 'Simple Life' in text:
+    if '라이킷' in text or 'LIKIT' in text or '롯데' in text or 'LOCA' in text:
+        card_company = '롯데카드'
+    elif '하나' in text or 'Simple Life' in text:
         card_company = '하나카드'
     elif '현대' in text:
         card_company = '현대카드'
     elif '삼성' in text:
         card_company = '삼성카드'
-    elif '롯데' in text:
-        card_company = '롯데카드'
     elif '국민' in text or 'KB' in text:
         card_company = 'KB국민카드'
     elif '신한' in text:
@@ -435,48 +435,87 @@ def parse_statement_table(text):
     items = []
     current_year = datetime.now().year
 
-    for line in lines:
-        line_clean = line.replace('\xa0', ' ').strip()
-        if any(skip in line_clean for skip in ['이용일자', '이용가맹점', '상세정보', '카드소계', '합계', '결제계좌', '고객님', '회차', '원금', '수수료', '결제후잔액']):
+    i = 0
+    while i < len(lines):
+        line = lines[i].replace('\xa0', ' ').strip()
+        
+        # 무시할 헤더/합계 라인
+        if any(skip in line for skip in ['이용내역', '이용총액', '이용일자', '이용가맹점', '상세정보', '소계', '합계', '결제계좌', '고객님', '회차', '원금', '수수료', '결제후잔액', '적립예정', '혜택금액', '라이킷 펀']):
+            i += 1
             continue
 
-        # MM/DD 또는 YYYY-MM-DD 로 시작하는 행 매칭
-        m = re.match(r'^(?:(\d{4})[./\-])?(\d{1,2})[./\-](\d{1,2})\s+(.+)$', line_clean)
-        if not m:
+        # 1. 단독 날짜 라인 확인 (롯데카드 스타일: '7.2', '07.02', '7/2', '07/02' 등)
+        date_alone_match = re.match(r'^(?:(\d{4})[./\-])?(\d{1,2})[./\-](\d{1,2})$', line)
+        if date_alone_match:
+            y = date_alone_match.group(1) or str(current_year)
+            m = date_alone_match.group(2).zfill(2)
+            d = date_alone_match.group(3).zfill(2)
+            date_str = f"{y}-{m}-{d}"
+            
+            # 다음 줄이 가맹점명 + 금액 라인인지 확인
+            if i + 1 < len(lines):
+                next_line = lines[i+1].replace('\xa0', ' ').strip()
+                if not any(skip in next_line for skip in ['소계', '합계']):
+                    cols = [c.strip() for c in re.split(r'\t+|\s{2,}', next_line) if c.strip()]
+                    if cols:
+                        merchant = cols[0]
+                        amount = 0
+                        for col in cols[1:]:
+                            col_num = col.replace(',', '').replace(' ', '')
+                            if col_num.isdigit():
+                                amount = int(col_num)
+                                break
+                        if amount == 0:
+                            amt_m = re.search(r'([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{3,})\s*원?', next_line)
+                            if amt_m:
+                                amount = int(amt_m.group(1).replace(',', ''))
+                                
+                        if amount > 0:
+                            items.append({
+                                'date': date_str,
+                                'name': merchant,
+                                'amount': amount,
+                                'card_company': card_company or '롯데카드',
+                                'installment': 1,
+                                'is_cancel': False
+                            })
+                            i += 2
+                            continue
+            i += 1
             continue
 
-        y = m.group(1) or str(current_year)
-        month = m.group(2).zfill(2)
-        day = m.group(3).zfill(2)
-        date_str = f"{y}-{month}-{day}"
-        rest = m.group(4).strip()
+        # 2. 한 줄에 날짜와 가맹점+금액이 함께 있는 경우 (하나카드 스타일 등)
+        m = re.match(r'^(?:(\d{4})[./\-])?(\d{1,2})[./\-](\d{1,2})\s+(.+)$', line)
+        if m:
+            y = m.group(1) or str(current_year)
+            month = m.group(2).zfill(2)
+            day = m.group(3).zfill(2)
+            date_str = f"{y}-{month}-{day}"
+            rest = m.group(4).strip()
 
-        cols = [c.strip() for c in re.split(r'\t+|\s{2,}', rest) if c.strip()]
-        if not cols:
-            continue
-
-        merchant = cols[0]
-        amount = 0
-        for col in cols[1:]:
-            col_num = col.replace(',', '').replace(' ', '')
-            if col_num.isdigit():
-                amount = int(col_num)
-                break
-
-        if amount == 0:
-            amt_m = re.search(r'([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{4,})\s*원?', rest)
-            if amt_m:
-                amount = int(amt_m.group(1).replace(',', ''))
-
-        if amount > 0:
-            items.append({
-                'date': date_str,
-                'name': merchant,
-                'amount': amount,
-                'card_company': card_company or '하나카드',
-                'installment': 1,
-                'is_cancel': False
-            })
+            cols = [c.strip() for c in re.split(r'\t+|\s{2,}', rest) if c.strip()]
+            if cols:
+                merchant = cols[0]
+                amount = 0
+                for col in cols[1:]:
+                    col_num = col.replace(',', '').replace(' ', '')
+                    if col_num.isdigit():
+                        amount = int(col_num)
+                        break
+                if amount == 0:
+                    amt_m = re.search(r'([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{4,})\s*원?', rest)
+                    if amt_m:
+                        amount = int(amt_m.group(1).replace(',', ''))
+                if amount > 0:
+                    items.append({
+                        'date': date_str,
+                        'name': merchant,
+                        'amount': amount,
+                        'card_company': card_company or '하나카드',
+                        'installment': 1,
+                        'is_cancel': False
+                    })
+        i += 1
 
     return items
 
