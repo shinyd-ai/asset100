@@ -412,6 +412,75 @@ def find_matching_card_id(db, card_company):
     return rows[0]['id']
 
 
+def parse_statement_table(text):
+    """카드사 웹사이트/명세서 복사-붙여넣기 테이블 자동 파싱"""
+    if not text:
+        return []
+        
+    card_company = ''
+    if '하나' in text or 'Simple Life' in text:
+        card_company = '하나카드'
+    elif '현대' in text:
+        card_company = '현대카드'
+    elif '삼성' in text:
+        card_company = '삼성카드'
+    elif '롯데' in text:
+        card_company = '롯데카드'
+    elif '국민' in text or 'KB' in text:
+        card_company = 'KB국민카드'
+    elif '신한' in text:
+        card_company = '신한카드'
+
+    lines = [l.strip() for l in text.splitlines() if l.strip()]
+    items = []
+    current_year = datetime.now().year
+
+    for line in lines:
+        line_clean = line.replace('\xa0', ' ').strip()
+        if any(skip in line_clean for skip in ['이용일자', '이용가맹점', '상세정보', '카드소계', '합계', '결제계좌', '고객님', '회차', '원금', '수수료', '결제후잔액']):
+            continue
+
+        # MM/DD 또는 YYYY-MM-DD 로 시작하는 행 매칭
+        m = re.match(r'^(?:(\d{4})[./\-])?(\d{1,2})[./\-](\d{1,2})\s+(.+)$', line_clean)
+        if not m:
+            continue
+
+        y = m.group(1) or str(current_year)
+        month = m.group(2).zfill(2)
+        day = m.group(3).zfill(2)
+        date_str = f"{y}-{month}-{day}"
+        rest = m.group(4).strip()
+
+        cols = [c.strip() for c in re.split(r'\t+|\s{2,}', rest) if c.strip()]
+        if not cols:
+            continue
+
+        merchant = cols[0]
+        amount = 0
+        for col in cols[1:]:
+            col_num = col.replace(',', '').replace(' ', '')
+            if col_num.isdigit():
+                amount = int(col_num)
+                break
+
+        if amount == 0:
+            amt_m = re.search(r'([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{4,})\s*원?', rest)
+            if amt_m:
+                amount = int(amt_m.group(1).replace(',', ''))
+
+        if amount > 0:
+            items.append({
+                'date': date_str,
+                'name': merchant,
+                'amount': amount,
+                'card_company': card_company or '하나카드',
+                'installment': 1,
+                'is_cancel': False
+            })
+
+    return items
+
+
 def split_sms_messages(text):
     """여러 건의 결제 문자가 섞여있을 때 개별 문자로 분리 (모든 줄바꿈 및 붙여넣기 패턴 완벽 대응)"""
     if not text or not text.strip():
@@ -497,49 +566,80 @@ def api_card_tx_webhook():
     if not raw_message:
         return jsonify({'ok': False, 'error': '문자 내용(message)이 필요합니다.'}), 400
         
-    messages = split_sms_messages(raw_message)
+    db = get_db()
     results = []
     failed = []
-    db = get_db()
 
-    for msg in messages:
-        parsed = parse_card_sms(msg)
-        if not parsed or parsed.get('amount') is None:
-            failed.append({'message': msg, 'reason': '금액 분석 실패'})
-            continue
+    # 1. 카드사 웹사이트/명세서 복사-붙여넣기 테이블 형태 우선 감지
+    statement_items = parse_statement_table(raw_message)
+    if statement_items:
+        for item in statement_items:
+            card_id = data.get('card_id') or find_matching_card_id(db, item.get('card_company'))
+            merchant_name = item.get('name') or '카드결제'
+            amount = item.get('amount')
+            tx_date = item.get('date')
+            installment = item.get('installment', 1)
+            card_comp = item.get('card_company') or '하나카드'
+            memo = f"[명세서등록] {card_comp}".strip()
             
-        card_id = data.get('card_id') or find_matching_card_id(db, parsed.get('card_company'))
-        merchant_name = parsed.get('name') or '카드결제'
-        amount = parsed.get('amount')
-        tx_date = parsed.get('date')
-        installment = parsed.get('installment', 1)
-        card_comp = parsed.get('card_company') or '카드'
-        memo = f"[자동등록] {card_comp}".strip()
-        
-        category = _get_category_hint(db, merchant_name) or ''
-        fund_group_id = _get_fund_group_hint(db, merchant_name)
-        
-        db.execute(
-            "INSERT INTO card_tx (card_id, date, name, category, amount, installment, memo, category_locked, fund_group_id, fund_group_locked) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, 0)",
-            (card_id, tx_date, merchant_name, category, amount, installment, memo, fund_group_id)
-        )
-        
-        results.append({
-            'card_id': card_id,
-            'card_company': parsed.get('card_company'),
-            'date': tx_date,
-            'name': merchant_name,
-            'amount': amount,
-            'category': category,
-            'installment': installment
-        })
+            category = _get_category_hint(db, merchant_name) or ''
+            fund_group_id = _get_fund_group_hint(db, merchant_name)
+            
+            db.execute(
+                "INSERT INTO card_tx (card_id, date, name, category, amount, installment, memo, category_locked, fund_group_id, fund_group_locked) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, 0)",
+                (card_id, tx_date, merchant_name, category, amount, installment, memo, fund_group_id)
+            )
+            results.append({
+                'card_id': card_id,
+                'card_company': card_comp,
+                'date': tx_date,
+                'name': merchant_name,
+                'amount': amount,
+                'category': category,
+                'installment': installment
+            })
+    else:
+        # 2. 일반 SMS / 복수 결제 문자 처리
+        messages = split_sms_messages(raw_message)
+        for msg in messages:
+            parsed = parse_card_sms(msg)
+            if not parsed or parsed.get('amount') is None:
+                failed.append({'message': msg, 'reason': '금액 분석 실패'})
+                continue
+                
+            card_id = data.get('card_id') or find_matching_card_id(db, parsed.get('card_company'))
+            merchant_name = parsed.get('name') or '카드결제'
+            amount = parsed.get('amount')
+            tx_date = parsed.get('date')
+            installment = parsed.get('installment', 1)
+            card_comp = parsed.get('card_company') or '카드'
+            memo = f"[자동등록] {card_comp}".strip()
+            
+            category = _get_category_hint(db, merchant_name) or ''
+            fund_group_id = _get_fund_group_hint(db, merchant_name)
+            
+            db.execute(
+                "INSERT INTO card_tx (card_id, date, name, category, amount, installment, memo, category_locked, fund_group_id, fund_group_locked) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, 0)",
+                (card_id, tx_date, merchant_name, category, amount, installment, memo, fund_group_id)
+            )
+            
+            results.append({
+                'card_id': card_id,
+                'card_company': parsed.get('card_company'),
+                'date': tx_date,
+                'name': merchant_name,
+                'amount': amount,
+                'category': category,
+                'installment': installment
+            })
 
     db.commit()
     db.close()
 
     if not results:
-        return jsonify({'ok': False, 'error': '문자에서 결제 정보를 분석하지 못했습니다.', 'failed': failed}), 422
+        return jsonify({'ok': False, 'error': '문자 또는 명세서에서 결제 정보를 분석하지 못했습니다.', 'failed': failed}), 422
 
     return jsonify({
         'ok': True,
