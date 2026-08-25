@@ -9,6 +9,7 @@
 <ul class="nav nav-tabs mb-3" id="cardTabs">
   <li class="nav-item"><a class="nav-link active" data-bs-toggle="tab" href="#tab-info">카드 정보</a></li>
   <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#tab-tx">거래 내역</a></li>
+  <li class="nav-item"><a class="nav-link text-success fw-semibold" data-bs-toggle="tab" href="#tab-mail"><i class="bi bi-envelope-check me-1"></i>네이버 메일 자동동기화</a></li>
   <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#tab-excel">엑셀 가져오기</a></li>
   <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#tab-rules">카테고리 규칙</a></li>
   <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#tab-categories">카테고리 관리</a></li>
@@ -327,6 +328,98 @@
       </div>
     </div>
   </div>
+
+  <!-- 네이버 메일 자동동기화 탭 -->
+  <div class="tab-pane fade" id="tab-mail">
+    <div class="row g-4">
+      <div class="col-lg-5">
+        <div class="card border-0 shadow-sm mb-4">
+          <div class="card-header bg-white border-0 pt-3 fw-bold">
+            <i class="bi bi-envelope-at text-success me-2"></i>네이버 메일 카드 승인내역 가져오기
+          </div>
+          <div class="card-body">
+            <p class="text-muted small mb-3">
+              네이버 메일함에 수신된 <strong>카드 결제 승인 / 알림 메일</strong>을 자동으로 읽어 거래내역에 즉시 등록합니다.<br>
+              이미 등록된 결제건(동일 일시, 가맹점, 금액)은 <strong>자동으로 중복 제외</strong>됩니다.
+            </p>
+
+            <div class="mb-3">
+              <label class="form-label small fw-semibold text-muted">검색할 최근 메일 수</label>
+              <select id="mailScanCount" class="form-select form-select-sm">
+                <option value="30">최근 30개 메일</option>
+                <option value="50" selected>최근 50개 메일 (권장)</option>
+                <option value="100">최근 100개 메일</option>
+                <option value="200">최근 200개 메일</option>
+              </select>
+            </div>
+
+            <div class="mb-3">
+              <label class="form-label small fw-semibold text-muted">
+                보안명세서 암호 (생년월일 6자리) <span class="text-muted fw-normal">(선택)</span>
+              </label>
+              <input type="password" id="mailPassword6" class="form-control form-control-sm font-monospace"
+                placeholder="예: 880101 (롯데카드 등 암호화된 명세서 복호화용)" maxlength="10">
+              <div class="form-text small">※ 암호화된 월별 명세서 첨부파일이 있을 때만 사용되며 서버에 영구 저장되지 않습니다.</div>
+            </div>
+
+            <button class="btn btn-success w-100 fw-bold py-2 shadow-sm" id="btnSyncMail" onclick="syncNaverCardEmails()">
+              <i class="bi bi-arrow-repeat me-1"></i>지금 네이버 메일에서 거래내역 동기화
+            </button>
+            <div id="mailSyncSpinner" class="text-center py-3" style="display:none;">
+              <div class="spinner-border spinner-border-sm text-success me-2" role="status"></div>
+              <span class="small text-muted">네이버 메일함에 접속하여 카드 메일을 분석 중입니다...</span>
+            </div>
+
+            <hr class="my-3">
+
+            <div class="alert alert-light border small text-muted mb-0">
+              <div class="fw-bold mb-1"><i class="bi bi-shield-check text-success me-1"></i>지원 카드사</div>
+              하나카드, 국민카드, 신한카드, 삼성카드, 현대카드, 롯데카드, 우리카드, BC카드, 토스뱅크, 카카오뱅크 등
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="col-lg-7">
+        <div class="card border-0 shadow-sm">
+          <div class="card-header bg-white border-0 pt-3 fw-bold d-flex justify-content-between align-items-center">
+            <span><i class="bi bi-card-checklist text-primary me-2"></i>동기화 결과</span>
+            <span class="badge bg-secondary" id="mailSyncResultBadge">대기 중</span>
+          </div>
+          <div class="card-body">
+            <div id="mailResultEmpty" class="text-center py-5 text-muted">
+              <i class="bi bi-envelope-open fs-1 d-block mb-2 text-secondary"></i>
+              '동기화' 버튼을 누르면 메일에서 분석된 결제 내역이 여기에 표시됩니다.
+            </div>
+
+            <div id="mailResultContent" style="display:none;">
+              <div id="mailResultSummary" class="alert alert-info py-2 small mb-3"></div>
+              <div class="table-responsive">
+                <table class="table table-hover table-sm small align-middle mb-0">
+                  <thead class="table-light">
+                    <tr>
+                      <th>날짜</th>
+                      <th>카드</th>
+                      <th>가맹점명</th>
+                      <th class="text-end">금액</th>
+                      <th>카테고리</th>
+                    </tr>
+                  </thead>
+                  <tbody id="mailResultTableBody"></tbody>
+                </table>
+              </div>
+              <div class="mt-3 text-end">
+                <button class="btn btn-sm btn-primary" onclick="document.querySelector('[href=\'#tab-tx\']').click();txGrid.load()">
+                  <i class="bi bi-receipt me-1"></i>전체 거래내역 탭에서 확인하기
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <div class="tab-pane fade" id="tab-tx">
     <div class="card border-0 shadow-sm mb-3">
       <div class="card-body py-2">
@@ -1370,7 +1463,79 @@ async function submitSmsWebhookTest() {
       alertBox.innerHTML = `<i class="bi bi-exclamation-triangle-fill me-1"></i>파싱 실패: ${data.error || '분석할 수 없는 문자 형식입니다.'}`;
     }
   } catch (err) {
-    alert('오류 발생: ' + err.message);
+    alert('요청 중 오류가 발생했습니다: ' + err.message);
+  }
+}
+
+async function syncNaverCardEmails() {
+  const maxEmails = document.getElementById('mailScanCount').value;
+  const password6 = document.getElementById('mailPassword6').value.trim();
+  const btn = document.getElementById('btnSyncMail');
+  const spinner = document.getElementById('mailSyncSpinner');
+  const emptyBox = document.getElementById('mailResultEmpty');
+  const contentBox = document.getElementById('mailResultContent');
+  const summaryBox = document.getElementById('mailResultSummary');
+  const badge = document.getElementById('mailSyncResultBadge');
+  const tbody = document.getElementById('mailResultTableBody');
+
+  btn.disabled = true;
+  spinner.style.display = 'block';
+
+  try {
+    const res = await fetch('/api/card-tx/sync-mail', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        max_emails: parseInt(maxEmails),
+        password_6: password6
+      })
+    });
+    const data = await res.json();
+
+    spinner.style.display = 'none';
+    btn.disabled = false;
+
+    if (res.ok && data.ok) {
+      emptyBox.style.display = 'none';
+      contentBox.style.display = 'block';
+
+      badge.textContent = `${data.added_count}건 신규 등록`;
+      badge.className = data.added_count > 0 ? 'badge bg-success' : 'badge bg-secondary';
+
+      summaryBox.className = 'alert alert-info py-2 small mb-3';
+      summaryBox.innerHTML = `<i class="bi bi-info-circle-fill me-1"></i>${data.message}`;
+
+      const items = data.added_items || [];
+      if (items.length > 0) {
+        tbody.innerHTML = items.map(item => `
+          <tr>
+            <td>${item.date || '-'}</td>
+            <td><span class="badge bg-light text-dark border">${item.card_company || '카드'}</span></td>
+            <td class="fw-semibold text-primary">${item.name || '-'}</td>
+            <td class="text-end fw-bold text-danger">${Number(item.amount || 0).toLocaleString()}원</td>
+            <td><span class="badge bg-secondary">${item.category || '미분류'}</span></td>
+          </tr>
+        `).join('');
+      } else {
+        tbody.innerHTML = `<tr><td colspan="5" class="text-center text-muted py-3">새로운 미등록 결제 내역이 없습니다. (모두 이미 등록되었거나 결제 메일이 없음)</td></tr>`;
+      }
+
+      if (typeof txGrid !== 'undefined' && txGrid.load) {
+        txGrid.load();
+      }
+    } else {
+      emptyBox.style.display = 'none';
+      contentBox.style.display = 'block';
+      badge.textContent = '동기화 실패';
+      badge.className = 'badge bg-danger';
+      summaryBox.className = 'alert alert-danger py-2 small mb-3';
+      summaryBox.innerHTML = `<i class="bi bi-exclamation-triangle-fill me-1"></i>${data.error || '메일 동기화 중 오류가 발생했습니다.'}`;
+      tbody.innerHTML = '';
+    }
+  } catch (err) {
+    spinner.style.display = 'none';
+    btn.disabled = false;
+    alert('동기화 통신 오류: ' + err.message);
   }
 }
 </script>

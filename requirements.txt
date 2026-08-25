@@ -9,3 +9,5 @@ python-dotenv
 gunicorn
 requests
 yfinance
+beautifulsoup4
+pycryptodome

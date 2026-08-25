@@ -690,6 +690,81 @@ def api_card_tx_webhook():
     }), 201
 
 
+@app.route('/api/card-tx/sync-mail', methods=['POST'])
+def api_card_tx_sync_mail():
+    """
+    네이버 메일함에서 카드 결제/승인 메일을 읽어와 card_tx 테이블에 자동 등록
+    """
+    from card_mail_service import fetch_and_sync_card_emails
+    
+    data = request.get_json(silent=True) or {}
+    max_emails = data.get('max_emails', 50)
+    password_6 = data.get('password_6') or os.getenv('CARD_STATEMENT_PW')
+    
+    res = fetch_and_sync_card_emails(max_emails=max_emails, password_6=password_6)
+    if not res.get('ok'):
+        return jsonify({'ok': False, 'error': res.get('error', '메일 동기화 실패')}), 500
+        
+    items = res.get('items', [])
+    if not items:
+        return jsonify({'ok': True, 'count': 0, 'added_count': 0, 'skipped_count': 0, 'message': '새로운 카드 결제 또는 명세서 메일이 없습니다.'})
+        
+    db = get_db()
+    added_count = 0
+    skipped_count = 0
+    added_items = []
+    
+    for item in items:
+        tx_date = item.get('date')
+        merchant_name = item.get('name') or '카드결제'
+        amount = item.get('amount')
+        installment = item.get('installment', 1)
+        card_comp = item.get('card_company') or '카드'
+        memo = f"[메일자동등록] {card_comp} ({item.get('sender', '')[:20]})".strip()
+        
+        # 중복 체크: 동일 날짜, 동일 가맹점, 동일 금액이 이미 있는지 확인
+        existing = db.execute(
+            "SELECT id FROM card_tx WHERE date = ? AND name = ? AND amount = ?",
+            (tx_date, merchant_name, amount)
+        ).fetchone()
+        
+        if existing:
+            skipped_count += 1
+            continue
+            
+        card_id = find_matching_card_id(db, card_comp)
+        category = _get_category_hint(db, merchant_name) or ''
+        fund_group_id = _get_fund_group_hint(db, merchant_name)
+        
+        db.execute(
+            "INSERT INTO card_tx (card_id, date, name, category, amount, installment, memo, category_locked, fund_group_id, fund_group_locked) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, 0)",
+            (card_id, tx_date, merchant_name, category, amount, installment, memo, fund_group_id)
+        )
+        
+        added_count += 1
+        added_items.append({
+            'card_id': card_id,
+            'card_company': card_comp,
+            'date': tx_date,
+            'name': merchant_name,
+            'amount': amount,
+            'category': category
+        })
+        
+    db.commit()
+    db.close()
+    
+    return jsonify({
+        'ok': True,
+        'message': f'메일에서 {len(items)}건을 감지하여 신규 {added_count}건을 등록했습니다. (중복 제외 {skipped_count}건)',
+        'scanned_count': len(items),
+        'added_count': added_count,
+        'skipped_count': skipped_count,
+        'added_items': added_items
+    })
+
+
 @app.route('/api/card-tx/<int:rid>', methods=['PUT', 'DELETE'])
 def api_card_tx_detail(rid):
     db = get_db()
