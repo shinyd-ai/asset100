@@ -1490,7 +1490,13 @@ async function syncNaverCardEmails() {
         password_6: password6
       })
     });
-    const data = await res.json();
+    let data;
+    const textResp = await res.text();
+    try {
+      data = JSON.parse(textResp);
+    } catch (e) {
+      throw new Error(res.status === 504 || res.status === 502 ? '서버 응답 시간 초과 (Timeout) - 검색할 메일 수를 30개로 줄여서 다시 시도해보세요.' : '서버 오류 (' + res.status + '): ' + textResp.slice(0, 100));
+    }
 
     spinner.style.display = 'none';
     btn.disabled = false;

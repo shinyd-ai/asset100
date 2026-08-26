@@ -189,6 +189,23 @@ def fetch_and_sync_card_emails(max_emails=50, mark_seen=False, password_6=None):
         card_keywords = ['카드', '승인', '결제', '명세서', '청구서', '이용대금', '체크카드', '신용카드', '영수증', '하나카드', '국민카드', '신한카드', '삼성카드', '현대카드', '롯데카드', '우리카드', 'BC카드', '비씨카드', '토스', '카카오뱅크']
         
         for m_id in target_ids:
+            # 1. 헤더 먼저 가져와서 카드 관련 메일인지 빠르게 필터링 (네트워크 대역폭 & 타임아웃 방지)
+            res, hdr_data = mail.fetch(m_id, '(RFC822.HEADER)')
+            if res != 'OK' or not hdr_data:
+                continue
+                
+            subject = ""
+            from_sender = ""
+            for hp in hdr_data:
+                if isinstance(hp, tuple):
+                    msg_hdr = email.message_from_bytes(hp[1])
+                    subject = decode_mime_words(msg_hdr.get('Subject'))
+                    from_sender = decode_mime_words(msg_hdr.get('From'))
+                    
+            if not any(k in subject for k in card_keywords) and not any(k in from_sender for k in card_keywords):
+                continue
+                
+            # 2. 카드 관련 메일인 경우에만 본문/첨부파일 다운로드
             res, msg_data = mail.fetch(m_id, '(RFC822)')
             if res != 'OK':
                 continue
@@ -196,15 +213,9 @@ def fetch_and_sync_card_emails(max_emails=50, mark_seen=False, password_6=None):
             for response_part in msg_data:
                 if isinstance(response_part, tuple):
                     msg = email.message_from_bytes(response_part[1])
-                    subject = decode_mime_words(msg.get('Subject'))
-                    from_sender = decode_mime_words(msg.get('From'))
-                    
-                    if not any(k in subject for k in card_keywords) and not any(k in from_sender for k in card_keywords):
-                        continue
-                        
                     body_text, html_attachments = extract_email_body_and_attachments(msg)
                     
-                    # 1. 명세서 첨부파일이 있는 경우 (월별 명세서)
+                    # 1) 명세서 첨부파일이 있는 경우 (월별 명세서)
                     has_statement = False
                     for att in html_attachments:
                         fname = att['filename']
@@ -234,7 +245,7 @@ def fetch_and_sync_card_emails(max_emails=50, mark_seen=False, password_6=None):
                                         tx['sender'] = from_sender
                                         parsed_items.append(tx)
 
-                    # 2. 첨부파일 명세서가 아닌 경우 실시간 결제 승인 본문 파싱
+                    # 2) 첨부파일 명세서가 아닌 경우 실시간 결제 승인 본문 파싱
                     if not has_statement and body_text:
                         parsed = parse_card_email_text(subject, from_sender, body_text)
                         if parsed.get('amount'):
