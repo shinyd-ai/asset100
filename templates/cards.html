@@ -355,11 +355,11 @@
 
             <div class="mb-3">
               <label class="form-label small fw-semibold text-muted">
-                보안명세서 암호 (생년월일 6자리) <span class="text-muted fw-normal">(선택)</span>
+                보안명세서 암호 (생년월일 6자리 / 사업자번호) <span class="text-muted fw-normal">(선택)</span>
               </label>
               <input type="password" id="mailPassword6" class="form-control form-control-sm font-monospace"
-                placeholder="예: 880101 (롯데카드 등 암호화된 명세서 복호화용)" maxlength="10">
-              <div class="form-text small">※ 암호화된 월별 명세서 첨부파일이 있을 때만 사용되며 서버에 영구 저장되지 않습니다.</div>
+                placeholder="예: 생년월일 6자리 (현대카드, 롯데카드 등 암호화된 명세서 복호화용)" maxlength="10">
+              <div class="form-text small">※ 현대카드/롯데카드 등 보안 명세서 첨부파일 복호화에 사용되며 저장되지 않습니다. (하나카드는 암호 없음)</div>
             </div>
 
             <button class="btn btn-success w-100 fw-bold py-2 shadow-sm" id="btnSyncMail" onclick="syncNaverCardEmails()">

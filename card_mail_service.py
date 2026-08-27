@@ -7,7 +7,7 @@ from email.header import decode_header
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 
-from statement_parser import decrypt_unisafe_html, parse_hana_statement_html, parse_lotte_statement_html
+from statement_parser import decrypt_unisafe_html, decrypt_vestmail_html, parse_hana_statement_html, parse_lotte_statement_html, parse_hyundai_statement_html
 
 load_dotenv()
 
@@ -237,6 +237,19 @@ def fetch_and_sync_card_emails(max_emails=50, mark_seen=False, password_6=None):
                             decrypted_html = decrypt_unisafe_html(content, statement_pw)
                             if decrypted_html:
                                 txs = parse_lotte_statement_html(decrypted_html)
+                                if txs:
+                                    has_statement = True
+                                    for tx in txs:
+                                        tx['email_id'] = m_id.decode()
+                                        tx['subject'] = subject
+                                        tx['sender'] = from_sender
+                                        parsed_items.append(tx)
+
+                        # 현대카드 보안 명세서 (VestMail)
+                        elif 'hyundaicard' in fname.lower() or 'hyundai' in fname.lower() or '현대카드' in subject or '현대카드' in from_sender:
+                            decrypted_html = decrypt_vestmail_html(content, statement_pw)
+                            if decrypted_html:
+                                txs = parse_hyundai_statement_html(decrypted_html)
                                 if txs:
                                     has_statement = True
                                     for tx in txs:
