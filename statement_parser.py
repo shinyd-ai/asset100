@@ -89,7 +89,6 @@ global.document = document;
 var org = {{ style: {{}} }};
 global.org = org;
 function alert(msg) {{}}
-function setTimeout(fn) {{ fn(); }}
 """
 
     runner_js = "\n\n".join([
@@ -106,7 +105,7 @@ function setTimeout(fn) {{ fn(); }}
         js_path = js_f.name
 
     try:
-        proc = subprocess.run(['node', js_path], stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10)
+        proc = subprocess.run(['node', js_path], stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=15)
         if os.path.exists(out_path) and os.path.getsize(out_path) > 0:
             with open(out_path, 'r', encoding='utf-8', errors='ignore') as f:
                 decrypted_html = f.read()
@@ -134,37 +133,31 @@ def parse_hyundai_statement_html(html_str, default_year=None):
         current_year = int(year_match.group(1))
 
     transactions = []
-    current_card_name = "현대카드"
 
     for tr in rows:
-        tds = tr.find_all('td')
-        if len(tds) >= 3:
+        # width="10" 또는 공백 spacer td 제외
+        tds = [td for td in tr.find_all('td') if td.get_text().strip() and td.get_text().strip() != '\xa0']
+        if len(tds) >= 4:
             td_texts = [td.get_text().strip().replace('\xa0', '') for td in tds]
-            for idx, text in enumerate(td_texts[:2]):
-                date_match = re.search(r'(\d{4})[-./](\d{1,2})[-./](\d{1,2})', text) or re.search(r'^(\d{1,2})[-./](\d{1,2})$', text)
-                if date_match:
-                    groups = date_match.groups()
-                    if len(groups) == 3:
-                        tx_date = f"{int(groups[0]):04d}-{int(groups[1]):02d}-{int(groups[2]):02d}"
-                    else:
-                        tx_date = f"{current_year:04d}-{int(groups[0]):02d}-{int(groups[1]):02d}"
-                        
-                    store_candidates = [t for t in td_texts if len(t) > 1 and not re.match(r'^[0-9,.-]+$', t) and not any(w in t for w in ['일시불', '할부', '정상', '승인'])]
-                    amt_candidates = [t.replace(',', '') for t in td_texts if re.match(r'^-?[0-9,]+$', t) and len(t.replace(',', '')) >= 3]
-                    
-                    if store_candidates and amt_candidates:
-                        store_name = store_candidates[0]
-                        amount = int(amt_candidates[0])
-                        transactions.append({
-                            'card_company': '현대카드',
-                            'card_name': current_card_name,
-                            'date': tx_date,
-                            'name': store_name,
-                            'amount': amount,
-                            'installment': 1,
-                            'source': '이용명세서'
-                        })
-                    break
+            # Pattern: 06.01 (월.일)
+            date_match = re.search(r'^(\d{2})[./-](\d{2})$', td_texts[0])
+            if date_match:
+                month, day = date_match.groups()
+                tx_date = f"{current_year:04d}-{int(month):02d}-{int(day):02d}"
+                card_name = td_texts[1]
+                store_name = td_texts[2]
+                amt_str = td_texts[3].replace(',', '')
+                if amt_str.replace('-', '').isdigit() and len(amt_str) >= 1:
+                    amount = int(amt_str)
+                    transactions.append({
+                        'card_company': '현대카드',
+                        'card_name': card_name,
+                        'date': tx_date,
+                        'name': store_name,
+                        'amount': amount,
+                        'installment': 1,
+                        'source': '이용명세서'
+                    })
 
     return transactions
 
