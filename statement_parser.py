@@ -213,7 +213,12 @@ def decrypt_unisafe_html(html_str, password_6):
             if b'<!--LIC_TO UNISECURE-->' in dec:
                 lic_idx = dec.find(b'<!--LIC_TO UNISECURE-->')
                 clean_bytes = dec[lic_idx + len(b'<!--LIC_TO UNISECURE-->'):]
-                for enc in ['utf-8', 'euc-kr', 'cp949']:
+                # Check for charset declaration inside HTML
+                if b'charset=euc-kr' in clean_bytes.lower() or b'charset="euc-kr"' in clean_bytes.lower():
+                    enc_list = ['euc-kr', 'cp949', 'utf-8']
+                else:
+                    enc_list = ['euc-kr', 'cp949', 'utf-8']
+                for enc in enc_list:
                     try:
                         return clean_bytes.decode(enc)
                     except Exception:
@@ -233,7 +238,7 @@ def decrypt_unisafe_html(html_str, password_6):
         if b'<!--LIC_TO UNISECURE-->' in decrypted:
             lic_idx = decrypted.find(b'<!--LIC_TO UNISECURE-->')
             clean_bytes = decrypted[lic_idx + len(b'<!--LIC_TO UNISECURE-->'):]
-            for enc in ['utf-8', 'euc-kr', 'cp949']:
+            for enc in ['euc-kr', 'cp949', 'utf-8']:
                 try:
                     return clean_bytes.decode(enc)
                 except Exception:
@@ -308,11 +313,49 @@ def parse_lotte_statement_html(html_str, default_year=None):
     current_card_name = "롯데카드"
 
     for tr in rows:
+        # 1. em.useday 가 있는 경우 (롯데카드 이용대금 명세서 표준 포맷)
+        em_useday = tr.find('em', class_='useday')
+        if em_useday:
+            day_text = em_useday.get_text().strip()
+            date_m = re.search(r'(\d{1,2})\.(\d{1,2})', day_text)
+            if date_m:
+                month, day = date_m.groups()
+                tx_date = f"{current_year:04d}-{int(month):02d}-{int(day):02d}"
+                
+                # 가맹점명: em.useday 부모 td에서 em 텍스트 제거
+                td_first = tr.find('td', class_='first') or tr.find('td')
+                if td_first:
+                    td_clone = BeautifulSoup(str(td_first), 'html.parser')
+                    for em in td_clone.find_all('em'):
+                        em.decompose()
+                    store_name = td_clone.get_text().strip()
+                else:
+                    store_name = "롯데카드 가맹점"
+
+                # 금액: headers에 card_field4가 있거나 숫자인 td 탐색
+                amount = 0
+                for td in tr.find_all('td'):
+                    t_str = td.get_text().strip().replace(',', '')
+                    if re.match(r'^-?[0-9]+$', t_str) and len(t_str) >= 3:
+                        amount = int(t_str)
+                        break
+
+                if amount > 0 and store_name:
+                    transactions.append({
+                        'card_company': '롯데카드',
+                        'card_name': current_card_name,
+                        'date': tx_date,
+                        'name': store_name,
+                        'amount': amount,
+                        'installment': 1,
+                        'source': '이용명세서'
+                    })
+                continue
+
+        # 2. 일반 테이블 포맷 fallback
         tds = tr.find_all('td')
         if len(tds) >= 3:
             td_texts = [td.get_text().strip().replace('\xa0', '') for td in tds]
-            # Pattern 탐색
-            # 1. 날짜가 2026.07.14 또는 07/14 또는 07.14
             for idx, text in enumerate(td_texts[:2]):
                 date_match = re.search(r'(\d{4})[-./](\d{1,2})[-./](\d{1,2})', text) or re.search(r'^(\d{1,2})[-./](\d{1,2})$', text)
                 if date_match:
@@ -322,7 +365,6 @@ def parse_lotte_statement_html(html_str, default_year=None):
                     else:
                         tx_date = f"{current_year:04d}-{int(groups[0]):02d}-{int(groups[1]):02d}"
                         
-                    # 가맹점과 금액 찾기
                     store_candidates = [t for t in td_texts if len(t) > 1 and not re.match(r'^[0-9,.-]+$', t)]
                     amt_candidates = [t.replace(',', '') for t in td_texts if re.match(r'^-?[0-9,]+$', t) and len(t.replace(',', '')) >= 3]
                     

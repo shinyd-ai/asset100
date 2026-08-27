@@ -63,10 +63,10 @@ def extract_email_body_and_attachments(msg):
                 raw_str = payload.decode('cp949', errors='ignore')
                 
         if fname and (fname.lower().endswith('.html') or fname.lower().endswith('.htm')):
-            html_attachments.append({'filename': fname, 'content': raw_str})
+            html_attachments.append({'filename': fname, 'content': raw_str, 'raw_bytes': payload})
         elif 'attachment' in cdisp:
             if fname and (fname.lower().endswith('.html') or fname.lower().endswith('.htm')):
-                html_attachments.append({'filename': fname, 'content': raw_str})
+                html_attachments.append({'filename': fname, 'content': raw_str, 'raw_bytes': payload})
         else:
             if ctype == 'text/html':
                 soup = BeautifulSoup(raw_str, 'html.parser')
@@ -235,7 +235,10 @@ def fetch_and_sync_card_emails(max_emails=50, mark_seen=False, password_6=None):
                         # 롯데카드 보안 명세서
                         elif 'lottecard' in fname.lower() or 'lotte' in fname.lower() or '롯데카드' in subject:
                             print(f"[카드메일동기화] 롯데카드 명세서 발견: {fname}, 비밀번호 길이: {len(statement_pw)}")
-                            decrypted_html = decrypt_unisafe_html(content, statement_pw)
+                            # raw_bytes가 있으면 raw_bytes를 우선 전달 (인코딩 손실 방지)
+                            raw_b = att.get('raw_bytes')
+                            html_input = raw_b.decode('utf-8', errors='ignore') if raw_b else content
+                            decrypted_html = decrypt_unisafe_html(html_input, statement_pw)
                             if decrypted_html:
                                 with open("decrypted_lotte.html", "w", encoding="utf-8") as f:
                                     f.write(decrypted_html)
@@ -254,7 +257,9 @@ def fetch_and_sync_card_emails(max_emails=50, mark_seen=False, password_6=None):
                         # 현대카드 보안 명세서 (VestMail)
                         elif 'hyundaicard' in fname.lower() or 'hyundai' in fname.lower() or '현대카드' in subject or '현대카드' in from_sender:
                             print(f"[카드메일동기화] 현대카드 명세서 발견: {fname}, 비밀번호 길이: {len(statement_pw)}")
-                            decrypted_html = decrypt_vestmail_html(content, statement_pw)
+                            raw_b = att.get('raw_bytes')
+                            html_input = raw_b.decode('utf-8', errors='ignore') if raw_b else content
+                            decrypted_html = decrypt_vestmail_html(html_input, statement_pw)
                             if decrypted_html:
                                 txs = parse_hyundai_statement_html(decrypted_html)
                                 print(f"[카드메일동기화] 현대카드 복호화 성공 -> {len(txs)}건 파싱됨")
