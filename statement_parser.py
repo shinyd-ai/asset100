@@ -1,6 +1,7 @@
 import os
 import re
 import base64
+import hashlib
 import subprocess
 import tempfile
 from bs4 import BeautifulSoup
@@ -199,21 +200,46 @@ def decrypt_unisafe_html(html_str, password_6):
             ciphertext = raw_data
 
         password_bytes = str(password_6).strip().encode('utf-8')
-        key, iv = evp_bytestokey(password_bytes, salt, 16, 16)
+        
+        # 1) UniSafe CryptoJS 표준 방식 (MD5(pw) as Key and IV)
+        key_md5 = hashlib.md5(password_bytes).digest()
+        iv_md5 = hashlib.md5(password_bytes).digest()
+        try:
+            cipher = AES.new(key_md5, AES.MODE_CBC, iv_md5)
+            dec = cipher.decrypt(ciphertext)
+            pad_len = dec[-1]
+            if 0 < pad_len <= 16:
+                dec = dec[:-pad_len]
+            if b'<!--LIC_TO UNISECURE-->' in dec:
+                lic_idx = dec.find(b'<!--LIC_TO UNISECURE-->')
+                clean_bytes = dec[lic_idx + len(b'<!--LIC_TO UNISECURE-->'):]
+                for enc in ['utf-8', 'euc-kr', 'cp949']:
+                    try:
+                        return clean_bytes.decode(enc)
+                    except Exception:
+                        continue
+                return clean_bytes.decode('utf-8', errors='ignore')
+        except Exception:
+            pass
 
+        # 2) OpenSSL EVP KDF 방식
+        key, iv = evp_bytestokey(password_bytes, salt, 16, 16)
         cipher = AES.new(key, AES.MODE_CBC, iv)
         decrypted = cipher.decrypt(ciphertext)
-        
         pad_len = decrypted[-1]
-        if pad_len < 16:
+        if 0 < pad_len <= 16:
             decrypted = decrypted[:-pad_len]
 
-        for enc in ['utf-8', 'euc-kr', 'cp949']:
-            try:
-                return decrypted.decode(enc)
-            except Exception:
-                continue
-        return decrypted.decode('utf-8', errors='ignore')
+        if b'<!--LIC_TO UNISECURE-->' in decrypted:
+            lic_idx = decrypted.find(b'<!--LIC_TO UNISECURE-->')
+            clean_bytes = decrypted[lic_idx + len(b'<!--LIC_TO UNISECURE-->'):]
+            for enc in ['utf-8', 'euc-kr', 'cp949']:
+                try:
+                    return clean_bytes.decode(enc)
+                except Exception:
+                    continue
+            return clean_bytes.decode('utf-8', errors='ignore')
+        return None
     except Exception as e:
         print(f"Decryption error: {e}")
         return None
