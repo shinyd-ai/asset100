@@ -1,4 +1,5 @@
 import sqlite3
+from pathlib import Path
 
 import pytest
 
@@ -171,3 +172,31 @@ def test_bulk_save_preserves_payment_link_and_manual_locks(client, db):
         'SELECT category_locked, fund_group_locked FROM card_tx WHERE id = 1'
     ).fetchone()
     assert (locks['category_locked'], locks['fund_group_locked']) == (1, 1)
+
+
+def test_mobile_transaction_shell_has_editing_and_accessibility_landmarks():
+    html = Path('templates/cards.html').read_text(encoding='utf-8')
+
+    for identifier in (
+        'mobileTxList', 'mobileTxSelectionToggle', 'mobileTxSaveBar',
+        'mobileTxEditSheet', 'mobileTxCategory', 'mobileTxFundGroup',
+    ):
+        assert f'id="{identifier}"' in html
+    assert 'aria-live="polite"' in html
+    assert 'aria-label="결제 메일 연결"' in html
+    assert 'aria-label="가계부 거래 연결"' in html
+    assert 'aria-label="수동 분류"' in html
+
+
+def test_mobile_transaction_styles_keep_touch_targets_and_desktop_table_separate():
+    html = Path('templates/cards.html').read_text(encoding='utf-8')
+    css = Path('static/css/style.css').read_text(encoding='utf-8')
+
+    assert 'id="txDesktopTableWrap"' in html
+    assert '@media (max-width: 767.98px)' in css
+    assert '.mobile-tx-list' in css
+    assert '.mobile-tx-row' in css
+    assert '.mobile-tx-save-bar' in css
+    assert '.mobile-tx-sheet' in css
+    assert 'min-height: 44px' in css
+    assert '@media (prefers-reduced-motion: reduce)' in css

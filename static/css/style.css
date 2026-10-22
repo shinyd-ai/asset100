@@ -280,6 +280,127 @@ body {
   }
 }
 
+/* 모바일 카드 거래 수정 */
+.mobile-tx-workspace,
+.mobile-tx-save-bar,
+.mobile-tx-sheet,
+.mobile-tx-sheet-backdrop {
+  display: none;
+}
+
+@media (max-width: 767.98px) {
+  #txDesktopTableWrap {
+    display: none;
+  }
+
+  .card:has(#txDesktopTableWrap) {
+    display: none;
+  }
+
+  .mobile-tx-workspace {
+    display: block;
+  }
+
+  .mobile-tx-toolbar {
+    display: flex;
+    justify-content: flex-end;
+    margin-bottom: 0.75rem;
+  }
+
+  .mobile-tx-list {
+    display: grid;
+    gap: 0.65rem;
+    padding-bottom: calc(6rem + env(safe-area-inset-bottom));
+  }
+
+  .mobile-tx-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 0.25rem 0.75rem;
+    width: 100%;
+    padding: 0.9rem;
+    color: #1F2933;
+    text-align: left;
+    background: #fff;
+    border: 1px solid #e5e8eb;
+    border-radius: 0.8rem;
+  }
+
+  .mobile-tx-touch {
+    min-height: 44px;
+  }
+
+  .mobile-tx-save-bar {
+    position: fixed;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 1040;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 0.75rem 1rem calc(0.75rem + env(safe-area-inset-bottom));
+    color: #1F2933;
+    background: #fff;
+    border-top: 1px solid #e5e8eb;
+    box-shadow: 0 -8px 24px rgba(31, 41, 51, 0.08);
+  }
+
+  .mobile-tx-sheet-backdrop[hidden],
+  .mobile-tx-sheet[hidden] {
+    display: none;
+  }
+
+  .mobile-tx-sheet-backdrop:not([hidden]) {
+    position: fixed;
+    inset: 0;
+    z-index: 1050;
+    display: block;
+    background: rgba(31, 41, 51, 0.42);
+  }
+
+  .mobile-tx-sheet:not([hidden]) {
+    position: fixed;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 1060;
+    display: block;
+    max-height: min(82vh, 720px);
+    overflow-y: auto;
+    background: #F7F8FA;
+    border-radius: 1rem 1rem 0 0;
+    box-shadow: 0 -12px 32px rgba(31, 41, 51, 0.16);
+  }
+
+  .mobile-tx-sheet-header,
+  .mobile-tx-sheet-body {
+    padding: 1rem;
+  }
+
+  .mobile-tx-sheet-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    background: #fff;
+    border-bottom: 1px solid #e5e8eb;
+  }
+
+  .mobile-tx-sheet .form-label,
+  .mobile-tx-details summary {
+    color: #1F2933;
+    font-weight: 600;
+  }
+
+  .mobile-tx-sheet :focus-visible,
+  .mobile-tx-row:focus-visible,
+  .mobile-tx-touch:focus-visible {
+    outline: 3px solid #146C94;
+    outline-offset: 2px;
+  }
+}
+
 /* ── 그리드 인라인 편집 (노션 스타일) ────────────────────── */
 .grid-row {
   cursor: pointer;

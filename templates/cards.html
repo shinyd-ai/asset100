@@ -487,11 +487,59 @@
         </div>
       </div>
     </div>
+    <section class="mobile-tx-workspace" aria-label="모바일 카드 거래내역">
+      <div class="mobile-tx-toolbar">
+        <button type="button" class="btn btn-outline-primary mobile-tx-touch" id="mobileTxSelectionToggle" aria-pressed="false">
+          선택
+        </button>
+        <span class="visually-hidden" id="mobileTxConnectionLegend">
+          <span aria-label="결제 메일 연결"></span>
+          <span aria-label="가계부 거래 연결"></span>
+          <span aria-label="수동 분류"></span>
+        </span>
+      </div>
+      <p class="visually-hidden" id="mobileTxStatus" aria-live="polite"></p>
+      <div class="mobile-tx-list" id="mobileTxList" role="list" aria-busy="false"></div>
+    </section>
+
+    <div class="mobile-tx-save-bar" id="mobileTxSaveBar" hidden>
+      <span id="mobileTxDraftCount">수정 내용 없음</span>
+      <button type="button" class="btn btn-primary mobile-tx-touch" id="mobileTxSaveButton" disabled>저장</button>
+    </div>
+
+    <div class="mobile-tx-sheet-backdrop" id="mobileTxSheetBackdrop" hidden></div>
+    <section class="mobile-tx-sheet" id="mobileTxEditSheet" role="dialog" aria-modal="true" aria-labelledby="mobileTxSheetTitle" hidden>
+      <div class="mobile-tx-sheet-header">
+        <h3 class="h6 mb-0" id="mobileTxSheetTitle">카드 거래 수정</h3>
+        <button type="button" class="btn-close mobile-tx-touch" id="mobileTxSheetClose" aria-label="수정 닫기"></button>
+      </div>
+      <div class="mobile-tx-sheet-body">
+        <label for="mobileTxMerchant" class="form-label">가맹점</label>
+        <input id="mobileTxMerchant" class="form-control mobile-tx-touch" type="text">
+        <label for="mobileTxCategory" class="form-label mt-3">카테고리</label>
+        <select id="mobileTxCategory" class="form-select mobile-tx-touch"></select>
+        <label for="mobileTxFundGroup" class="form-label mt-3">자금그룹</label>
+        <select id="mobileTxFundGroup" class="form-select mobile-tx-touch"></select>
+        <details class="mobile-tx-details mt-3">
+          <summary>상세 항목</summary>
+          <label for="mobileTxAmount" class="form-label mt-3">금액</label>
+          <input id="mobileTxAmount" class="form-control mobile-tx-touch" type="number">
+          <label for="mobileTxMemo" class="form-label mt-3">메모</label>
+          <textarea id="mobileTxMemo" class="form-control" rows="2"></textarea>
+          <label for="mobileTxInstallment" class="form-label mt-3">할부</label>
+          <input id="mobileTxInstallment" class="form-control mobile-tx-touch" type="number" min="1">
+          <label for="mobileTxDate" class="form-label mt-3">날짜</label>
+          <input id="mobileTxDate" class="form-control mobile-tx-touch" type="date">
+        </details>
+      </div>
+    </section>
+
     <div class="row g-3">
       <!-- 거래 목록 -->
       <div class="col-12">
         <div class="card border-0 shadow-sm">
-          <div class="card-body p-0">
+          <div id="txDesktopTableWrap">
+            <div class="card-body p-0">
             <div class="table-responsive">
               <table class="table table-hover mb-0" id="txTable" style="table-layout: fixed; min-width: 1000px">
                 <thead class="table-light">
@@ -512,13 +560,14 @@
                 <tbody></tbody>
               </table>
             </div>
-          </div>
+            </div>
           <div class="card-footer bg-white border-top d-flex justify-content-end align-items-center gap-3 py-2">
             <button id="btn-clear-filter" class="btn btn-xs btn-outline-secondary d-none" onclick="txGrid.resetFilters()" style="font-size:0.75rem">
               <i class="bi bi-x-circle me-1"></i>필터 초기화
             </button>
             <span class="text-muted small" id="txCount"></span>
             <span class="fw-bold" id="txTotal"></span>
+          </div>
           </div>
         </div>
       </div>
