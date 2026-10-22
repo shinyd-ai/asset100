@@ -14,6 +14,7 @@ scratch/
 
 # Local design workspace and one-off mail/card investigation artifacts
 .superdesign/
+.worktrees/
 analyze_*.py
 check_*.py
 compare_with_db.py
