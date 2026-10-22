@@ -313,6 +313,15 @@ body {
     padding-bottom: calc(6rem + env(safe-area-inset-bottom));
   }
 
+  .mobile-tx-status:not(:empty) {
+    margin: 0 0 0.75rem;
+    padding: 0.65rem 0.75rem;
+    color: #146C94;
+    background: #e9f5fa;
+    border-radius: 0.65rem;
+    font-size: 0.875rem;
+  }
+
   .mobile-tx-row {
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;

@@ -183,6 +183,7 @@ def test_mobile_transaction_shell_has_editing_and_accessibility_landmarks():
     ):
         assert f'id="{identifier}"' in html
     assert 'aria-live="polite"' in html
+    assert 'id="mobileTxStatus" class="mobile-tx-status" aria-live="polite"' in html
     assert 'aria-label="결제 메일 연결"' in html
     assert 'aria-label="가계부 거래 연결"' in html
     assert 'aria-label="수동 분류"' in html
