@@ -66,6 +66,27 @@ def get_db():
     )
     return SQLiteCompatibleConnection(conn)
 
+
+def automatic_mail_memo_cleanup_sql():
+    """Clear only exact legacy auto-memo shapes on source-tracked rows."""
+    return r"""
+        WITH applied AS (
+          INSERT INTO app_migrations (migration_key)
+          VALUES ('20260920_remove_automatic_mail_memos')
+          ON CONFLICT (migration_key) DO NOTHING
+          RETURNING migration_key
+        )
+        UPDATE card_tx
+        SET memo = ''
+        WHERE EXISTS (SELECT 1 FROM applied)
+          AND source_key IS NOT NULL
+          AND (
+            memo ~ '^\[메일자동등록\] [^|]+$'
+            OR memo ~ '^\[쿠팡\] .+$'
+            OR memo ~ '^\[메일자동등록\] [^|]+ \| \[쿠팡\] .+$'
+          )
+    """
+
 def init_db():
     conn = get_db()
     c = conn.cursor()
@@ -110,7 +131,44 @@ def init_db():
             category        TEXT,
             amount          INTEGER NOT NULL DEFAULT 0,
             installment     INTEGER DEFAULT 1,
-            memo            TEXT
+            memo            TEXT,
+            source_key      TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS card_payment_links (
+            payment_source_key TEXT PRIMARY KEY,
+            card_tx_id INTEGER NOT NULL REFERENCES card_tx(id) ON DELETE CASCADE,
+            linked_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+
+        CREATE TABLE IF NOT EXISTS card_payment_duplicate_archive (
+            duplicate_card_tx_id INTEGER PRIMARY KEY,
+            retained_card_tx_id INTEGER NOT NULL REFERENCES card_tx(id),
+            payment_source_key TEXT NOT NULL,
+            transaction_snapshot JSONB NOT NULL,
+            archived_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+
+        CREATE TABLE IF NOT EXISTS commerce_orders (
+            id                  SERIAL PRIMARY KEY,
+            source_key          TEXT NOT NULL UNIQUE,
+            vendor              TEXT NOT NULL,
+            order_date          TEXT NOT NULL,
+            total_amount        INTEGER NOT NULL,
+            payment_method      TEXT,
+            card_company        TEXT,
+            product_summary     TEXT,
+            products_json       TEXT NOT NULL DEFAULT '[]',
+            matched_card_tx_id  INTEGER REFERENCES card_tx(id) ON DELETE SET NULL,
+            original_tx_name    TEXT,
+            sync_status         TEXT NOT NULL DEFAULT 'unmatched',
+            created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+
+        CREATE TABLE IF NOT EXISTS app_migrations (
+            migration_key TEXT PRIMARY KEY,
+            applied_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
         );
 
         CREATE TABLE IF NOT EXISTS stocks (
@@ -290,6 +348,32 @@ def init_db():
         "ALTER TABLE card_tx  ADD COLUMN IF NOT EXISTS category_locked   INTEGER DEFAULT 0",
         "ALTER TABLE card_tx  ADD COLUMN IF NOT EXISTS fund_group_id     INTEGER REFERENCES fund_groups(id)",
         "ALTER TABLE card_tx  ADD COLUMN IF NOT EXISTS fund_group_locked INTEGER DEFAULT 0",
+        "ALTER TABLE card_tx  ADD COLUMN IF NOT EXISTS source_key         TEXT",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_card_tx_source_key ON card_tx(source_key) WHERE source_key IS NOT NULL",
+        "CREATE TABLE IF NOT EXISTS card_payment_links (payment_source_key TEXT PRIMARY KEY, card_tx_id INTEGER NOT NULL REFERENCES card_tx(id) ON DELETE CASCADE, linked_at TIMESTAMPTZ NOT NULL DEFAULT NOW())",
+        "CREATE INDEX IF NOT EXISTS idx_card_payment_links_tx ON card_payment_links(card_tx_id)",
+        "CREATE TABLE IF NOT EXISTS card_payment_duplicate_archive (duplicate_card_tx_id INTEGER PRIMARY KEY, retained_card_tx_id INTEGER NOT NULL REFERENCES card_tx(id), payment_source_key TEXT NOT NULL, transaction_snapshot JSONB NOT NULL, archived_at TIMESTAMPTZ NOT NULL DEFAULT NOW())",
+        """CREATE TABLE IF NOT EXISTS commerce_orders (
+               id SERIAL PRIMARY KEY,
+               source_key TEXT NOT NULL UNIQUE,
+               vendor TEXT NOT NULL,
+               order_date TEXT NOT NULL,
+               total_amount INTEGER NOT NULL,
+               payment_method TEXT,
+               card_company TEXT,
+               product_summary TEXT,
+               products_json TEXT NOT NULL DEFAULT '[]',
+               matched_card_tx_id INTEGER REFERENCES card_tx(id) ON DELETE SET NULL,
+               original_tx_name TEXT,
+               sync_status TEXT NOT NULL DEFAULT 'unmatched',
+               created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+               updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+           )""",
+        "CREATE INDEX IF NOT EXISTS idx_commerce_orders_match ON commerce_orders(sync_status, order_date, total_amount)",
+        "ALTER TABLE commerce_orders ADD COLUMN IF NOT EXISTS original_tx_name TEXT",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_commerce_orders_card_tx ON commerce_orders(matched_card_tx_id) WHERE matched_card_tx_id IS NOT NULL",
+        "CREATE TABLE IF NOT EXISTS app_migrations (migration_key TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW())",
+        automatic_mail_memo_cleanup_sql(),
         "ALTER TABLE stock_tx ADD COLUMN IF NOT EXISTS external_source   TEXT",
         "ALTER TABLE stock_tx ADD COLUMN IF NOT EXISTS external_id       TEXT",
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_stock_tx_external ON stock_tx(external_source, external_id) WHERE external_source IS NOT NULL AND external_id IS NOT NULL",
@@ -298,10 +382,13 @@ def init_db():
           for i, n in enumerate(['식비', '쇼핑', '교통', '의료', '문화', '기타'])],
     ]
 
+    required_constraint_sql = "CREATE UNIQUE INDEX IF NOT EXISTS idx_commerce_orders_card_tx ON commerce_orders(matched_card_tx_id) WHERE matched_card_tx_id IS NOT NULL"
     for sql in migration_sqls:
         try:
             c.execute(sql)
         except Exception as e:
+            if sql == required_constraint_sql:
+                raise RuntimeError("commerce_orders 1:1 matching constraint migration failed") from e
             print(f"Migration skip: {e}")
             conn.rollback()
             continue

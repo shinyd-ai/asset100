@@ -9,6 +9,12 @@
   <link href="/static/css/style.css?v=17" rel="stylesheet">
 </head>
 <body>
+<a class="skip-link" href="#main-content">본문으로 건너뛰기</a>
+<button type="button" id="mobileNavToggle" class="btn btn-primary" aria-label="메뉴 열기"
+        aria-controls="sidebar" aria-expanded="false">
+  <i class="bi bi-list" aria-hidden="true"></i>
+</button>
+<div id="sidebarBackdrop" aria-hidden="true"></div>
 
 <!-- 사이드바 -->
 <nav id="sidebar" class="d-flex flex-column flex-shrink-0 p-3 text-white">
@@ -84,7 +90,7 @@
 </nav>
 
 <!-- 메인 콘텐츠 -->
-<div id="main-content">
+<div id="main-content" tabindex="-1">
   <div class="container-fluid py-4 px-4">
     {% block content %}{% endblock %}
   </div>
@@ -93,6 +99,44 @@
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.2/dist/chart.umd.min.js"></script>
 <script src="/static/js/common.js?v=17"></script>
+<script>
+(() => {
+  const toggle = document.getElementById('mobileNavToggle');
+  const backdrop = document.getElementById('sidebarBackdrop');
+  const sidebar = document.getElementById('sidebar');
+  const mobileQuery = window.matchMedia('(max-width: 576px)');
+  const setMobileState = open => {
+    if (!mobileQuery.matches) {
+      sidebar.inert = false;
+      sidebar.removeAttribute('aria-hidden');
+      return;
+    }
+    sidebar.inert = !open;
+    sidebar.setAttribute('aria-hidden', String(!open));
+  };
+  const closeMenu = (returnFocus = true) => {
+    document.body.classList.remove('sidebar-open');
+    toggle.setAttribute('aria-expanded', 'false');
+    toggle.setAttribute('aria-label', '메뉴 열기');
+    setMobileState(false);
+    if (returnFocus && mobileQuery.matches) toggle.focus();
+  };
+  toggle.addEventListener('click', () => {
+    const open = document.body.classList.toggle('sidebar-open');
+    toggle.setAttribute('aria-expanded', String(open));
+    toggle.setAttribute('aria-label', open ? '메뉴 닫기' : '메뉴 열기');
+    setMobileState(open);
+    if (open) sidebar.querySelector('a')?.focus();
+  });
+  backdrop.addEventListener('click', closeMenu);
+  document.addEventListener('keydown', event => {
+    if (event.key === 'Escape') closeMenu();
+  });
+  sidebar.querySelectorAll('a').forEach(link => link.addEventListener('click', () => closeMenu(false)));
+  mobileQuery.addEventListener('change', () => closeMenu(false));
+  setMobileState(false);
+})();
+</script>
 {% block scripts %}{% endblock %}
 </body>
 </html>

@@ -5,7 +5,7 @@ import hashlib
 import subprocess
 import tempfile
 from bs4 import BeautifulSoup
-from datetime import datetime
+from datetime import datetime, timedelta
 from Crypto.Cipher import AES
 from Crypto.Hash import MD5
 
@@ -374,5 +374,110 @@ def parse_lotte_statement_html(html_str, default_year=None):
                             'source': '이용명세서'
                         })
                     break
+
+    return transactions
+
+
+def _samsung_int(value):
+    """Convert Samsung statement numeric fields to int without losing signs."""
+    if value is None:
+        return None
+    cleaned = re.sub(r'[^0-9-]', '', str(value))
+    if not cleaned or cleaned == '-':
+        return None
+    try:
+        return int(cleaned)
+    except ValueError:
+        return None
+
+
+def _samsung_date(value):
+    digits = re.sub(r'\D', '', str(value or ''))
+    if len(digits) < 8:
+        return None
+    digits = digits[:8]
+    try:
+        parsed = datetime.strptime(digits, '%Y%m%d')
+    except ValueError:
+        return None
+    return parsed.strftime('%Y-%m-%d')
+
+
+def parse_samsung_statement_data(data):
+    """Parse Samsung Card's statement API response into card transactions.
+
+    Samsung separates purchases by payment type.  Keep every source row,
+    including rows whose date, merchant and amount happen to be identical.
+    """
+    list_names = [
+        'fpyList', 'istmList', 'ancsList', 'cdlnList', 'istmFnnList',
+        'rvoFpyList', 'rvoStmCdLnList', 'stmCdLnList',
+        'crdPrtctnPdList', 'stlmCanIzList',
+    ]
+    transactions = []
+    row_number = 0
+
+    for list_name in list_names:
+        rows = data.get(list_name) or []
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+
+            tx_date = next((
+                parsed for key in ('slDt', 'uDt', 'slDt1', 'ognlSlDt')
+                if (parsed := _samsung_date(row.get(key)))
+            ), None)
+            merchant = next((
+                str(row.get(key)).strip()
+                for key in ('mrcNm', 'acusrNm', 'pdCNm')
+                if row.get(key) and str(row.get(key)).strip()
+            ), '')
+            amount = next((
+                parsed for key in ('slAm', 'bilSumAm', 'uAm', 'bilPcam', 'bilafBlam')
+                if (parsed := _samsung_int(row.get(key))) is not None
+            ), None)
+            if list_name == 'istmList':
+                billed_installment = _samsung_int(row.get('bilPcam1'))
+                if billed_installment is not None and billed_installment > 0:
+                    amount = billed_installment
+                    original_date = tx_date
+                    billing_date = _samsung_date(row.get('stlmDt'))
+                    if billing_date:
+                        billing_month = datetime.strptime(billing_date, '%Y-%m-%d').replace(day=1)
+                        tx_date = (billing_month - timedelta(days=1)).strftime('%Y-%m-01')
+
+            if not tx_date or not merchant or amount is None:
+                continue
+            if list_name == 'stlmCanIzList':
+                amount = -abs(amount)
+
+            installment = next((
+                parsed for key in ('istmMcn', 'bilTn', 'uCt')
+                if (parsed := _samsung_int(row.get(key))) is not None and parsed > 0
+            ), 1)
+            card_name = str(row.get('pdCNm') or row.get('cardPrtgNm') or '삼성카드').strip()
+
+            transaction = {
+                'card_company': '삼성카드',
+                'card_name': card_name,
+                'date': tx_date,
+                'name': merchant,
+                'amount': amount,
+                'installment': installment,
+                'source': '이용명세서',
+                'statement_row': row_number,
+            }
+            if list_name == 'istmList' and billed_installment is not None and billed_installment > 0:
+                transaction.update({
+                    'original_date': original_date,
+                    'original_amount': _samsung_int(row.get('slAm')),
+                    'installment_number': _samsung_int(row.get('bilTn')),
+                    'installment_principal': _samsung_int(row.get('bilPcam')),
+                    'installment_interest': _samsung_int(row.get('bilInt')),
+                })
+            transactions.append(transaction)
+            row_number += 1
 
     return transactions

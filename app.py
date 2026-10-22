@@ -1,7 +1,7 @@
 from flask import Flask, render_template, request, jsonify, Response, g
 from flask_cors import CORS
 from database import get_db as database_get_db, init_db
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 import json, os, shutil, sqlite3, re, csv, io, requests
 import yfinance as yf
 
@@ -247,7 +247,12 @@ def api_card_tx():
         card_id = request.args.get('card_id')
         year    = request.args.get('year')
         month   = request.args.get('month')
-        query   = "SELECT t.*, c.card_name FROM card_tx t LEFT JOIN card_info c ON t.card_id = c.id"
+        query = (
+            "SELECT t.*, c.card_name, "
+            "(SELECT COUNT(*) FROM card_payment_links l WHERE l.card_tx_id = t.id) "
+            "AS linked_payment_count FROM card_tx t "
+            "LEFT JOIN card_info c ON t.card_id = c.id"
+        )
         params  = []
         conds   = []
         if card_id:
@@ -388,13 +393,13 @@ def parse_card_sms(text):
     }
 
 
-def find_matching_card_id(db, card_company):
+def find_matching_card_id(db, card_company, fallback=True):
     """카드사 이름으로 등록된 카드 ID 매칭"""
     rows = db.execute("SELECT id, card_name FROM card_info").fetchall()
     if not rows:
         return None
-    if not card_company:
-        return rows[0]['id']
+    if not card_company or card_company == '카드':
+        return rows[0]['id'] if fallback else None
     
     for row in rows:
         cname = row['card_name'] or ''
@@ -409,7 +414,7 @@ def find_matching_card_id(db, card_company):
             if kw in (row['card_name'] or ''):
                 return row['id']
                 
-    return rows[0]['id']
+    return rows[0]['id'] if fallback else None
 
 
 def parse_statement_table(text):
@@ -690,78 +695,712 @@ def api_card_tx_webhook():
     }), 201
 
 
+def _mail_item_already_imported(db, item, card_id, claimed_legacy_ids):
+    """Check idempotency without collapsing legitimate repeated purchases.
+
+    New imports use a source key.  Existing rows created before source keys were
+    introduced are matched at most once per sync run, so a second identical row
+    in the same statement is still preserved.
+    """
+    source_key = item.get('source_key')
+    if source_key:
+        existing = db.execute(
+            "SELECT id FROM card_tx WHERE source_key = ?",
+            (source_key,)
+        ).fetchone()
+        if existing:
+            return True
+
+    legacy_rows = db.execute(
+        "SELECT id FROM card_tx WHERE source_key IS NULL AND date = ? AND name = ? AND amount = ? "
+        "AND ((card_id = ?) OR (card_id IS NULL AND ? IS NULL)) ORDER BY id",
+        (item.get('date'), item.get('name') or '카드결제', item.get('amount'), card_id, card_id)
+    ).fetchall()
+    for row in legacy_rows:
+        legacy_id = row['id']
+        if legacy_id not in claimed_legacy_ids:
+            claimed_legacy_ids.add(legacy_id)
+            return True
+    return False
+
+
+def _mail_transaction_memo(item):
+    """Keep installment purchase details visible in the transaction memo."""
+    if item.get('product_summary'):
+        return f"[쿠팡] {str(item['product_summary']).strip()}"
+    if item.get('card_company') == '삼성카드' and item.get('original_date'):
+        parts = [f"원거래일 {item['original_date']}"]
+        if item.get('installment_number') and item.get('installment'):
+            parts.append(f"{item['installment_number']}/{item['installment']}회")
+        if item.get('original_amount') is not None:
+            parts.append(f"전체 원금 {item['original_amount']:,}원")
+        if item.get('installment_principal') is not None:
+            parts.append(f"이번 회차 원금 {item['installment_principal']:,}원")
+        if item.get('installment_interest') is not None:
+            parts.append(f"이자 {item['installment_interest']:,}원")
+        return ' · '.join(parts)
+    return ''
+
+
+def _merge_candidate_result(results, candidate_id, status):
+    if not candidate_id:
+        return
+    priority = {'파싱 실패': 0, '중복': 1, '등록 성공': 2}
+    current = results.get(candidate_id)
+    if current is None or priority.get(status, 0) >= priority.get(current, 0):
+        results[candidate_id] = status
+
+
+def _mail_transaction_result(item, status):
+    return {
+        'candidate_id': item.get('candidate_id'),
+        'date': item.get('date'),
+        'card_company': item.get('card_company') or '카드',
+        'name': item.get('name') or '카드결제',
+        'amount': item.get('amount'),
+        'status': status,
+        'subject': item.get('subject') or '',
+    }
+
+
+def _normalized_merchant(value):
+    return re.sub(r'[^0-9a-z가-힣]', '', str(value or '').lower())
+
+
+def _public_transaction(row):
+    if not row:
+        return None
+    return {
+        key: row.get(key) for key in
+        ('id', 'date', 'name', 'amount', 'card_name', 'source_key')
+    }
+
+
+def _classify_mail_match(item, candidates, original_candidates=None):
+    """Classify a parsed payment without changing the database."""
+    candidates = [dict(row) for row in (candidates or [])]
+    wanted_name = _normalized_merchant(item.get('name'))
+
+    result = {'status': 'unmatched', 'transaction': None,
+              'original_transaction': None, 'candidate_count': len(candidates)}
+    if len(candidates) == 1:
+        result.update(status='matched', transaction=_public_transaction(candidates[0]))
+    elif len(candidates) > 1:
+        result['status'] = 'ambiguous'
+
+    originals = [dict(row) for row in (original_candidates or [])]
+    if int(item.get('amount') or 0) < 0 and originals:
+        exact = [row for row in originals
+                 if _normalized_merchant(row.get('name')) == wanted_name]
+        reference = exact[0] if len(exact) == 1 else (originals[0] if len(originals) == 1 else None)
+        result['original_transaction'] = _public_transaction(reference)
+    return result
+
+
+def _match_mail_transaction(db, item, card_id):
+    source_key = item.get('source_key')
+    if source_key:
+        linked = db.execute(
+            "SELECT t.id, t.date, t.name, t.amount, t.source_key, c.card_name "
+            "FROM card_payment_links l JOIN card_tx t ON t.id = l.card_tx_id "
+            "LEFT JOIN card_info c ON t.card_id = c.id "
+            "WHERE l.payment_source_key = ?", (source_key,)
+        ).fetchall()
+        if linked:
+            return _classify_mail_match(item, linked)
+        linked = db.execute(
+            "SELECT t.id, t.date, t.name, t.amount, t.source_key, c.card_name "
+            "FROM card_tx t LEFT JOIN card_info c ON t.card_id = c.id "
+            "WHERE t.source_key = ? ORDER BY t.id", (source_key,)
+        ).fetchall()
+        if linked:
+            return _classify_mail_match(item, linked)
+
+    params = [item.get('date'), item.get('amount')]
+    sql = (
+        "SELECT t.id, t.date, t.name, t.amount, t.source_key, c.card_name "
+        "FROM card_tx t LEFT JOIN card_info c ON t.card_id = c.id "
+        "WHERE t.date = ? AND t.amount = ?"
+    )
+    if card_id is not None:
+        sql += " AND t.card_id = ?"
+        params.append(card_id)
+    candidates = db.execute(sql + " ORDER BY t.id", tuple(params)).fetchall()
+
+    originals = []
+    if int(item.get('amount') or 0) < 0:
+        try:
+            cancellation_day = datetime.strptime(item.get('date'), '%Y-%m-%d').date()
+        except (TypeError, ValueError):
+            cancellation_day = None
+        original_params = [abs(int(item['amount']))]
+        original_sql = (
+            "SELECT t.id, t.date, t.name, t.amount, t.source_key, c.card_name "
+            "FROM card_tx t LEFT JOIN card_info c ON t.card_id = c.id "
+            "WHERE t.amount = ?"
+        )
+        if cancellation_day:
+            original_sql += " AND t.date BETWEEN ? AND ?"
+            original_params.extend([
+                (cancellation_day - timedelta(days=3)).isoformat(),
+                cancellation_day.isoformat(),
+            ])
+        if card_id is not None:
+            original_sql += " AND t.card_id = ?"
+            original_params.append(card_id)
+        originals = db.execute(original_sql + " ORDER BY t.id", tuple(original_params)).fetchall()
+    return _classify_mail_match(item, candidates, originals)
+
+
+def _match_coupang_order(db, order):
+    from commerce_mail_service import match_card_transactions
+    order_day = datetime.strptime(order['order_date'], '%Y-%m-%d').date()
+    start = (order_day - timedelta(days=3)).isoformat()
+    end = (order_day + timedelta(days=3)).isoformat()
+    rows = db.execute(
+        "SELECT t.id, t.date, t.amount, t.name, t.source_key, c.card_name, "
+        "co.source_key AS linked_source_key FROM card_tx t "
+        "LEFT JOIN card_info c ON t.card_id = c.id "
+        "LEFT JOIN commerce_orders co ON co.matched_card_tx_id = t.id "
+        "WHERE t.amount = ? AND t.date BETWEEN ? AND ? ORDER BY t.id",
+        (order['total_amount'], start, end)
+    ).fetchall()
+    candidates = [dict(row) for row in rows]
+    match = match_card_transactions(order, candidates)
+    transaction = next((row for row in candidates if row['id'] == match['card_tx_id']), None)
+    return {
+        'status': match['status'], 'transaction': _public_transaction(transaction),
+        'original_transaction': None, 'candidate_count': match['candidate_count'],
+    }
+
+
+def _payment_preview(db, candidates, parsed_items, orders):
+    by_id = {row.get('candidate_id'): row for row in candidates}
+    for candidate in candidates:
+        candidate['match_status'] = 'parse_failed'
+        candidate['extracted_transactions'] = []
+    for item in parsed_items:
+        candidate = by_id.get(item.get('candidate_id'))
+        if not candidate:
+            continue
+        card_id = find_matching_card_id(db, item.get('card_company'), fallback=False)
+        match = _match_mail_transaction(db, item, card_id)
+        extracted = _mail_transaction_result(item, match['status'])
+        extracted.update(match)
+        candidate['extracted_transactions'].append(extracted)
+        candidate.update(
+            match_status=match['status'], matched_transaction=match['transaction'],
+            original_transaction=match['original_transaction'],
+            date=item.get('date') or candidate.get('date'),
+            card_company=item.get('card_company') or candidate.get('card_company'),
+            name=item.get('name'), amount=item.get('amount'),
+        )
+    for order in orders:
+        candidate = by_id.get(order.get('candidate_id'))
+        if not candidate:
+            continue
+        match = _match_coupang_order(db, order)
+        candidate.update(
+            match_status=match['status'], matched_transaction=match['transaction'],
+            original_transaction=None, date=order.get('order_date'),
+            card_company=order.get('card_company') or candidate.get('card_company'),
+            name=f"쿠팡 - {order.get('product_summary') or '상품정보 없음'}",
+            amount=order.get('total_amount'),
+        )
+    return candidates
+
+
+def _link_selected_payments(db, selected, parsed_items, orders):
+    from commerce_mail_service import reconcile_coupang_orders
+    results = {candidate_id: '파싱 실패' for candidate_id in selected}
+    transaction_results = []
+    matched_count = ambiguous_count = unmatched_count = 0
+
+    for item in parsed_items:
+        match = _match_mail_transaction(
+            db, item, find_matching_card_id(db, item.get('card_company'), fallback=False)
+        )
+        status = match['status']
+        label = {'matched': '기존 거래 연결', 'ambiguous': '매칭 보류',
+                 'unmatched': '미매칭'}[status]
+        if status == 'matched':
+            tx_id = match['transaction']['id']
+            db.execute(
+                "INSERT INTO card_payment_links (payment_source_key, card_tx_id) "
+                "VALUES (?, ?) ON CONFLICT (payment_source_key) DO NOTHING",
+                (item.get('source_key'), tx_id),
+            )
+            matched_count += 1
+        elif status == 'ambiguous':
+            ambiguous_count += 1
+        else:
+            unmatched_count += 1
+        results[item.get('candidate_id')] = label
+        row = _mail_transaction_result(item, label)
+        row.update(match)
+        transaction_results.append(row)
+
+    matched_orders = []
+    for order in orders:
+        match = _match_coupang_order(db, order)
+        status = match['status']
+        label = {'matched': '연결 성공', 'ambiguous': '매칭 보류',
+                 'unmatched': '미매칭'}[status]
+        if status == 'matched':
+            matched_orders.append(order)
+            matched_count += 1
+        elif status == 'ambiguous':
+            ambiguous_count += 1
+        else:
+            unmatched_count += 1
+        results[order.get('candidate_id')] = label
+        transaction_results.append({
+            'candidate_id': order.get('candidate_id'),
+            'date': order.get('order_date'),
+            'card_company': order.get('card_company') or '카드',
+            'name': f"쿠팡 - {order.get('product_summary') or '상품정보 없음'}",
+            'amount': order.get('total_amount'), 'status': label,
+            'subject': order.get('subject') or '', **match,
+        })
+    commerce_summary = reconcile_coupang_orders(db, matched_orders) if matched_orders else {
+        'orders': 0, 'matched': 0, 'ambiguous': 0, 'unmatched': 0,
+    }
+    return {
+        'results': results, 'transaction_results': transaction_results,
+        'matched_count': matched_count, 'ambiguous_count': ambiguous_count,
+        'unmatched_count': unmatched_count, 'commerce': commerce_summary,
+    }
+
+
+def _validate_selected_candidate_ids(data):
+    from card_mail_service import decode_mail_candidate_id
+    selected = data.get('candidate_ids')
+    if not isinstance(selected, list) or not selected or len(selected) > 200:
+        raise ValueError('처리할 메일을 1~200건 선택해주세요.')
+    if not all(isinstance(value, str) and value for value in selected):
+        raise ValueError('메일 선택값이 올바르지 않습니다.')
+    for candidate_id in selected:
+        decode_mail_candidate_id(candidate_id)
+    return selected
+
+
+def _store_selected_mail_items(db, items):
+    added_count = 0
+    skipped_count = 0
+    added_items = []
+    candidate_results = {}
+    transaction_results = []
+    claimed_legacy_ids = set()
+    for item in items:
+        card_comp = item.get('card_company') or '카드'
+        card_id = find_matching_card_id(
+            db, card_comp, fallback=item.get('source') != '실시간승인'
+        )
+        candidate_id = item.get('candidate_id')
+        if _mail_item_already_imported(db, item, card_id, claimed_legacy_ids):
+            skipped_count += 1
+            _merge_candidate_result(candidate_results, candidate_id, '중복')
+            transaction_results.append(_mail_transaction_result(item, '중복 제외'))
+            continue
+        merchant_name = item.get('name') or '카드결제'
+        category = _get_category_hint(db, merchant_name) or ''
+        fund_group_id = _get_fund_group_hint(db, merchant_name)
+        inserted = db.execute(
+            "INSERT INTO card_tx (card_id, date, name, category, amount, installment, memo, category_locked, fund_group_id, fund_group_locked, source_key) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, 0, ?) "
+            "ON CONFLICT (source_key) WHERE source_key IS NOT NULL DO NOTHING RETURNING id",
+            (card_id, item.get('date'), merchant_name, category, item.get('amount'),
+             item.get('installment', 1), _mail_transaction_memo(item), fund_group_id,
+             item.get('source_key'))
+        ).fetchone()
+        if not inserted:
+            skipped_count += 1
+            _merge_candidate_result(candidate_results, candidate_id, '중복')
+            transaction_results.append(_mail_transaction_result(item, '중복 제외'))
+            continue
+        added_count += 1
+        _merge_candidate_result(candidate_results, candidate_id, '등록 성공')
+        transaction_results.append(_mail_transaction_result(item, '신규 등록'))
+        added_items.append({
+            'card_id': card_id, 'card_company': card_comp, 'date': item.get('date'),
+            'name': merchant_name, 'amount': item.get('amount'), 'category': category,
+        })
+    return added_count, skipped_count, added_items, candidate_results, transaction_results
+
+
+@app.route('/api/card-tx/mail-candidates', methods=['POST'])
+def api_card_tx_mail_candidates():
+    from card_mail_service import (
+        fetch_and_sync_card_emails, scan_mail_candidates, validate_scan_limit,
+    )
+    from commerce_mail_service import fetch_coupang_orders
+
+    data = request.get_json(silent=True) or {}
+    group = data.get('group')
+    if group not in ('statement', 'payment'):
+        return jsonify({'ok': False, 'error': '메일 종류가 올바르지 않습니다.'}), 400
+    try:
+        max_emails = validate_scan_limit(data.get('max_emails', 50))
+    except ValueError as exc:
+        return jsonify({'ok': False, 'error': str(exc)}), 400
+    result = scan_mail_candidates(max_emails=max_emails, group=group)
+    if result.get('ok') and group == 'payment':
+        selected = [row['candidate_id'] for row in result.get('candidates', [])]
+        if selected:
+            parsed = fetch_and_sync_card_emails(
+                max_emails=len(selected), selected_candidates=selected,
+                sync_group='payment',
+            )
+            commerce = fetch_coupang_orders(
+                max_emails=len(selected), selected_candidates=selected,
+            )
+            if not parsed.get('ok'):
+                return jsonify(parsed), 502
+            if not commerce.get('ok'):
+                return jsonify(commerce), 502
+            db = get_db()
+            result['candidates'] = _payment_preview(
+                db, result.get('candidates', []), parsed.get('items', []),
+                commerce.get('orders', []),
+            )
+            result['parsed_count'] = len(parsed.get('items', [])) + len(commerce.get('orders', []))
+    return jsonify(result), (200 if result.get('ok') else 502)
+
+
+@app.route('/api/card-tx/sync-selected-mail', methods=['POST'])
+def api_card_tx_sync_selected_mail():
+    from card_mail_service import fetch_and_sync_card_emails
+    from commerce_mail_service import fetch_coupang_orders, reconcile_coupang_orders
+
+    data = request.get_json(silent=True) or {}
+    group = data.get('group')
+    if group not in ('statement', 'payment'):
+        return jsonify({'ok': False, 'error': '메일 종류가 올바르지 않습니다.'}), 400
+    try:
+        selected = _validate_selected_candidate_ids(data)
+    except ValueError as exc:
+        return jsonify({'ok': False, 'error': str(exc)}), 400
+
+    parsed = fetch_and_sync_card_emails(
+        max_emails=len(selected), password_6=data.get('password_6'),
+        selected_candidates=selected, sync_group=group,
+    )
+    if not parsed.get('ok'):
+        return jsonify(parsed), 502
+
+    if group == 'payment':
+        commerce = fetch_coupang_orders(
+            max_emails=len(selected), selected_candidates=selected,
+        )
+        if not commerce.get('ok'):
+            return jsonify(commerce), 502
+        db = get_db()
+        try:
+            processed = _link_selected_payments(
+                db, selected, parsed.get('items', []), commerce.get('orders', []),
+            )
+            db.commit()
+        except Exception:
+            db.rollback()
+            return jsonify({'ok': False, 'error': '선택한 메일을 연결하지 못했습니다.'}), 500
+        return jsonify({
+            'ok': True, 'added_count': 0, 'skipped_count': 0,
+            'parse_failure_count': parsed.get('parse_failure_count', 0),
+            'added_items': [], **processed,
+            'summary': {
+                'selected': len(selected),
+                'extracted': len(parsed.get('items', [])) + len(commerce.get('orders', [])),
+                'added': 0, 'duplicates': 0,
+                'matched': processed['matched_count'],
+                'ambiguous': processed['ambiguous_count'],
+                'unmatched': processed['unmatched_count'],
+                'failed': sum(1 for value in processed['results'].values()
+                              if value == '파싱 실패'),
+            },
+            'message': (f"기존 거래 {processed['matched_count']}건을 연결했습니다. "
+                        f"미매칭 {processed['unmatched_count']}건은 별도 승인이 필요합니다."),
+        })
+
+    db = get_db()
+    results = {candidate_id: '파싱 실패' for candidate_id in selected}
+    try:
+        added, skipped, added_items, card_results, transaction_results = _store_selected_mail_items(
+            db, parsed.get('items', [])
+        )
+        results.update(card_results)
+        db.commit()
+
+        commerce_summary = {'orders': 0, 'matched': 0, 'ambiguous': 0, 'unmatched': 0}
+        if group == 'payment':
+            commerce = fetch_coupang_orders(
+                max_emails=len(selected), selected_candidates=selected
+            )
+            if not commerce.get('ok'):
+                return jsonify(commerce), 502
+            commerce_summary = reconcile_coupang_orders(db, commerce.get('orders', []))
+            for order in commerce.get('orders', []):
+                row = db.execute(
+                    "SELECT sync_status FROM commerce_orders WHERE source_key = ?",
+                    (order['source_key'],)
+                ).fetchone()
+                status = (row or {}).get('sync_status', 'unmatched')
+                results[order.get('candidate_id')] = {
+                    'matched': '연결 성공', 'ambiguous': '연결 보류', 'unmatched': '미연결'
+                }.get(status, '미연결')
+                transaction_results.append({
+                    'candidate_id': order.get('candidate_id'),
+                    'date': order.get('order_date'),
+                    'card_company': order.get('card_company') or '카드',
+                    'name': f"쿠팡 - {order.get('product_summary') or '상품정보 없음'}",
+                    'amount': order.get('total_amount'),
+                    'status': results[order.get('candidate_id')],
+                    'subject': order.get('subject') or '',
+                })
+            db.commit()
+    except Exception:
+        db.rollback()
+        return jsonify({'ok': False, 'error': '선택한 메일을 저장하지 못했습니다.'}), 500
+
+    return jsonify({
+        'ok': True, 'added_count': added, 'skipped_count': skipped,
+        'parse_failure_count': parsed.get('parse_failure_count', 0),
+        'added_items': added_items, 'commerce': commerce_summary,
+        'results': results, 'transaction_results': transaction_results,
+        'summary': {
+            'selected': len(selected), 'extracted': len(parsed.get('items', [])),
+            'added': added, 'duplicates': skipped,
+            'failed': sum(1 for status in results.values() if status == '파싱 실패'),
+        },
+        'message': f'선택한 메일 {len(selected)}건 중 거래 {added}건을 등록했습니다.',
+    })
+
+
+@app.route('/api/card-tx/approve-unmatched-mail', methods=['POST'])
+def api_card_tx_approve_unmatched_mail():
+    """Create only payment candidates that are still unmatched at approval time."""
+    from card_mail_service import fetch_and_sync_card_emails
+    from commerce_mail_service import (
+        fetch_coupang_orders, reconcile_coupang_orders,
+    )
+
+    data = request.get_json(silent=True) or {}
+    try:
+        selected = _validate_selected_candidate_ids(data)
+    except ValueError as exc:
+        return jsonify({'ok': False, 'error': str(exc)}), 400
+
+    parsed = fetch_and_sync_card_emails(
+        max_emails=len(selected), password_6=data.get('password_6'),
+        selected_candidates=selected, sync_group='payment',
+    )
+    commerce = fetch_coupang_orders(
+        max_emails=len(selected), selected_candidates=selected,
+    )
+    if not parsed.get('ok'):
+        return jsonify(parsed), 502
+    if not commerce.get('ok'):
+        return jsonify(commerce), 502
+
+    db = get_db()
+    approved_items = []
+    approved_orders = []
+    results = {candidate_id: '파싱 실패' for candidate_id in selected}
+    try:
+        for item in parsed.get('items', []):
+            match = _match_mail_transaction(
+                db, item, find_matching_card_id(db, item.get('card_company'), fallback=False)
+            )
+            if match['status'] == 'unmatched':
+                approved_items.append(item)
+                results[item.get('candidate_id')] = '신규 등록 승인'
+            else:
+                results[item.get('candidate_id')] = (
+                    '이미 매칭됨' if match['status'] == 'matched' else '매칭 보류'
+                )
+
+        for order in commerce.get('orders', []):
+            match = _match_coupang_order(db, order)
+            if match['status'] == 'unmatched':
+                approved_items.append({
+                    'candidate_id': order.get('candidate_id'),
+                    'date': order.get('order_date'),
+                    'card_company': order.get('card_company'),
+                    'name': '쿠팡',
+                    'product_summary': order.get('product_summary'),
+                    'amount': order.get('total_amount'), 'installment': 1,
+                    'source_key': order.get('source_key'),
+                    'subject': order.get('subject') or '',
+                })
+                approved_orders.append(order)
+                results[order.get('candidate_id')] = '신규 등록 승인'
+            else:
+                results[order.get('candidate_id')] = (
+                    '이미 매칭됨' if match['status'] == 'matched' else '매칭 보류'
+                )
+
+        added, skipped, added_items, stored_results, transaction_results = (
+            _store_selected_mail_items(db, approved_items)
+        )
+        for candidate_id, status in stored_results.items():
+            results[candidate_id] = status
+        commerce_summary = reconcile_coupang_orders(db, approved_orders) if approved_orders else {
+            'orders': 0, 'matched': 0, 'ambiguous': 0, 'unmatched': 0,
+        }
+        db.commit()
+    except Exception:
+        db.rollback()
+        return jsonify({'ok': False, 'error': '미매칭 거래를 등록하지 못했습니다.'}), 500
+
+    return jsonify({
+        'ok': True, 'added_count': added, 'skipped_count': skipped,
+        'added_items': added_items, 'commerce': commerce_summary,
+        'results': results, 'transaction_results': transaction_results,
+        'summary': {
+            'selected': len(selected), 'extracted': len(approved_items),
+            'added': added, 'duplicates': skipped, 'failed': 0,
+        },
+        'message': f'승인한 미매칭 거래 {added}건을 신규 등록했습니다.',
+    })
+
+
 @app.route('/api/card-tx/sync-mail', methods=['POST'])
 def api_card_tx_sync_mail():
     """
     네이버 메일함에서 카드 결제/승인 메일을 읽어와 card_tx 테이블에 자동 등록
     """
-    from card_mail_service import fetch_and_sync_card_emails
+    from card_mail_service import fetch_and_sync_card_emails, validate_scan_limit
+    from commerce_mail_service import fetch_coupang_orders, reconcile_coupang_orders
     
     data = request.get_json(silent=True) or {}
-    max_emails = data.get('max_emails', 50)
+    try:
+        max_emails = validate_scan_limit(data.get('max_emails', 50))
+    except ValueError as exc:
+        return jsonify({'ok': False, 'error': str(exc)}), 400
     password_6 = data.get('password_6') or os.getenv('CARD_STATEMENT_PW')
     
     res = fetch_and_sync_card_emails(max_emails=max_emails, password_6=password_6)
     if not res.get('ok'):
         return jsonify({'ok': False, 'error': res.get('error', '메일 동기화 실패')}), 500
-        
+
     items = res.get('items', [])
+    parse_failure_count = int(res.get('parse_failure_count') or 0)
     if not items:
-        return jsonify({'ok': True, 'count': 0, 'added_count': 0, 'skipped_count': 0, 'message': '새로운 카드 결제 또는 명세서 메일이 없습니다.'})
-        
+        if parse_failure_count:
+            return jsonify({
+                'ok': False,
+                'error': f'명세서 {parse_failure_count}건을 감지했지만 복호화 또는 파싱하지 못했습니다.',
+                'parse_failure_count': parse_failure_count,
+            }), 422
+
     db = get_db()
     added_count = 0
     skipped_count = 0
+    linked_count = 0
     added_items = []
-    
-    for item in items:
-        tx_date = item.get('date')
-        merchant_name = item.get('name') or '카드결제'
-        amount = item.get('amount')
-        installment = item.get('installment', 1)
-        card_comp = item.get('card_company') or '카드'
-        memo = f"[메일자동등록] {card_comp} ({item.get('sender', '')[:20]})".strip()
-        
-        # 중복 체크: 동일 날짜, 동일 가맹점, 동일 금액이 이미 있는지 확인
-        existing = db.execute(
-            "SELECT id FROM card_tx WHERE date = ? AND name = ? AND amount = ?",
-            (tx_date, merchant_name, amount)
-        ).fetchone()
-        
-        if existing:
-            skipped_count += 1
-            continue
-            
-        card_id = find_matching_card_id(db, card_comp)
-        category = _get_category_hint(db, merchant_name) or ''
-        fund_group_id = _get_fund_group_hint(db, merchant_name)
-        
-        db.execute(
-            "INSERT INTO card_tx (card_id, date, name, category, amount, installment, memo, category_locked, fund_group_id, fund_group_locked) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, 0)",
-            (card_id, tx_date, merchant_name, category, amount, installment, memo, fund_group_id)
-        )
-        
-        added_count += 1
-        added_items.append({
-            'card_id': card_id,
-            'card_company': card_comp,
-            'date': tx_date,
-            'name': merchant_name,
-            'amount': amount,
-            'category': category
-        })
-        
-    db.commit()
-    db.close()
-    
+    claimed_legacy_ids = set()
+    commerce_summary = {'orders': 0, 'matched': 0, 'ambiguous': 0, 'unmatched': 0}
+    commerce_warning = None
+
+    try:
+        for item in items:
+            tx_date = item.get('date')
+            merchant_name = item.get('name') or '카드결제'
+            amount = item.get('amount')
+            installment = item.get('installment', 1)
+            card_comp = item.get('card_company') or '카드'
+            memo = _mail_transaction_memo(item)
+
+            is_payment = item.get('source') == '실시간승인'
+            card_id = find_matching_card_id(db, card_comp, fallback=not is_payment)
+            if is_payment:
+                match = _match_mail_transaction(db, item, card_id)
+                if match['status'] == 'matched':
+                    if item.get('source_key'):
+                        db.execute(
+                            "INSERT INTO card_payment_links (payment_source_key, card_tx_id) "
+                            "VALUES (?, ?) ON CONFLICT (payment_source_key) DO NOTHING",
+                            (item['source_key'], match['transaction']['id']),
+                        )
+                    linked_count += 1
+                    continue
+                if match['status'] == 'ambiguous':
+                    skipped_count += 1
+                    continue
+            if _mail_item_already_imported(db, item, card_id, claimed_legacy_ids):
+                skipped_count += 1
+                continue
+
+            category = _get_category_hint(db, merchant_name) or ''
+            fund_group_id = _get_fund_group_hint(db, merchant_name)
+
+            inserted = db.execute(
+                "INSERT INTO card_tx (card_id, date, name, category, amount, installment, memo, category_locked, fund_group_id, fund_group_locked, source_key) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, 0, ?) "
+                "ON CONFLICT (source_key) WHERE source_key IS NOT NULL DO NOTHING RETURNING id",
+                (card_id, tx_date, merchant_name, category, amount, installment, memo,
+                 fund_group_id, item.get('source_key'))
+            ).fetchone()
+            if not inserted:
+                skipped_count += 1
+                continue
+
+            added_count += 1
+            added_items.append({
+                'card_id': card_id,
+                'card_company': card_comp,
+                'date': tx_date,
+                'name': merchant_name,
+                'amount': amount,
+                'category': category
+            })
+
+        db.commit()
+
+        commerce_result = fetch_coupang_orders(max_emails=max_emails)
+        if commerce_result.get('ok'):
+            try:
+                commerce_summary = reconcile_coupang_orders(
+                    db, commerce_result.get('orders', [])
+                )
+                db.commit()
+            except Exception:
+                db.rollback()
+                commerce_warning = '쿠팡 주문정보를 저장하거나 카드 거래와 연결하지 못했습니다.'
+        else:
+            commerce_warning = commerce_result.get('error', '쿠팡 주문메일 동기화에 실패했습니다.')
+    except Exception:
+        db.rollback()
+        return jsonify({'ok': False, 'error': '메일 거래를 데이터베이스에 저장하지 못했습니다.'}), 500
+    finally:
+        db.close()
+
+    warning = None
+    if parse_failure_count:
+        warning = f'명세서 {parse_failure_count}건은 복호화 또는 파싱하지 못했습니다.'
+    result_message = f'메일에서 {len(items)}건을 감지하여 신규 {added_count}건을 등록했습니다. (중복 제외 {skipped_count}건)'
+    result_message += f' 기존 거래 연결 {linked_count}건.'
+    if warning:
+        result_message += f' {warning}'
+    result_message += (
+        f" 쿠팡 주문 {commerce_summary['orders']}건 중 "
+        f"{commerce_summary['matched']}건을 카드 거래와 연결했습니다."
+    )
+    if commerce_summary['ambiguous']:
+        result_message += f" 연결 후보가 여러 개인 주문 {commerce_summary['ambiguous']}건은 보류했습니다."
+    if commerce_warning:
+        result_message += f" {commerce_warning}"
     return jsonify({
         'ok': True,
-        'message': f'메일에서 {len(items)}건을 감지하여 신규 {added_count}건을 등록했습니다. (중복 제외 {skipped_count}건)',
+        'message': result_message,
         'scanned_count': len(items),
         'added_count': added_count,
+        'linked_count': linked_count,
         'skipped_count': skipped_count,
-        'added_items': added_items
+        'added_items': added_items,
+        'parse_failure_count': parse_failure_count,
+        'warning': warning,
+        'commerce': commerce_summary,
+        'commerce_warning': commerce_warning,
     })
 
 
