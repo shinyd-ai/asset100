@@ -200,3 +200,28 @@ def test_mobile_transaction_styles_keep_touch_targets_and_desktop_table_separate
     assert '.mobile-tx-sheet' in css
     assert 'min-height: 44px' in css
     assert '@media (prefers-reduced-motion: reduce)' in css
+
+
+def test_mobile_transaction_controller_stages_changes_and_uses_one_bulk_save():
+    html = Path('templates/cards.html').read_text(encoding='utf-8')
+
+    for method in (
+        'load(', 'openSheet(', 'applyField(', 'applyBulk(', 'save(', 'hasUnsavedChanges(',
+    ):
+        assert method in html
+    assert 'const mobileTxController' in html
+    assert 'new Map()' in html
+    assert 'new Set()' in html
+    assert "'/api/card-tx/bulk'" in html
+    assert "method: 'PUT'" in html
+    assert "['category', 'fund_group_id']" in html
+    assert "window.addEventListener('beforeunload'" in html
+
+
+def test_mobile_transaction_controller_keeps_drafts_after_save_errors():
+    html = Path('templates/cards.html').read_text(encoding='utf-8')
+
+    assert 'response.status === 409' in html
+    assert 'this.rowErrors' in html
+    assert 'this.draftChanges.clear()' in html
+    assert 'this.render();' in html

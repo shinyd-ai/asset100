@@ -466,7 +466,7 @@
             <select id="txMonth" class="form-select form-select-sm"></select>
           </div>
           <div class="col-auto">
-            <button class="btn btn-sm btn-primary" onclick="txGrid.load()">조회</button>
+            <button class="btn btn-sm btn-primary" onclick="mobileTxController.load()">조회</button>
           </div>
           <div class="col-auto ms-auto d-flex gap-2 align-items-center">
             <span id="autoCatMsg" class="text-success small" style="display:none"></span>
@@ -503,6 +503,12 @@
     </section>
 
     <div class="mobile-tx-save-bar" id="mobileTxSaveBar" hidden>
+      <div class="mobile-tx-bulk-controls" id="mobileTxBulkControls" hidden>
+        <label class="visually-hidden" for="mobileTxBulkCategory">일괄 카테고리</label>
+        <select id="mobileTxBulkCategory" class="form-select form-select-sm mobile-tx-touch"></select>
+        <label class="visually-hidden" for="mobileTxBulkFundGroup">일괄 자금그룹</label>
+        <select id="mobileTxBulkFundGroup" class="form-select form-select-sm mobile-tx-touch"></select>
+      </div>
       <span id="mobileTxDraftCount">수정 내용 없음</span>
       <button type="button" class="btn btn-primary mobile-tx-touch" id="mobileTxSaveButton" disabled>저장</button>
     </div>
@@ -737,6 +743,7 @@ const txGrid = new GridTable({
     renderFundBreakdown(meta.by_fund_group ?? [], meta.total ?? 0);
     renderCatBreakdown(meta.by_category ?? [], meta.total ?? 0);
     updateSelectionUI(new Set());
+    mobileTxController.setRows(rows);
   },
   onSelectChange: selected => updateSelectionUI(selected),
   onStartEdit: (tr, row) => {
@@ -766,6 +773,239 @@ const rulesGrid = new GridTable({
       render: v => v ? `<span class="badge bg-info-subtle text-info">${v}</span>` : '-' },
   ],
   apiUrl: '/api/card-category-rules',
+});
+
+const mobileTxController = {
+  rows: [],
+  draftChanges: new Map(),
+  selectedIds: new Set(),
+  rowErrors: new Map(),
+  selectionMode: false,
+  sheetTransactionId: null,
+  saving: false,
+
+  setRows(rows) {
+    this.rows = rows;
+    this.selectedIds = new Set([...this.selectedIds].filter(id => rows.some(row => row.id === id)));
+    this.render();
+  },
+
+  async load() {
+    if (this.hasUnsavedChanges() && !window.confirm('저장하지 않은 수정 내용이 있습니다. 기간 또는 카드 필터를 바꾸시겠습니까?')) return;
+    await txGrid.load();
+  },
+
+  hasUnsavedChanges() {
+    return this.draftChanges.size > 0;
+  },
+
+  effectiveRow(id) {
+    const row = this.rows.find(item => item.id === id);
+    return row ? {...row, ...(this.draftChanges.get(id) || {})} : null;
+  },
+
+  applyField(id, field, value) {
+    const source = this.rows.find(row => row.id === id);
+    if (!source) return;
+    const patch = {...(this.draftChanges.get(id) || {})};
+    if (value === source[field]) delete patch[field];
+    else patch[field] = value;
+    if (Object.keys(patch).length) this.draftChanges.set(id, patch);
+    else this.draftChanges.delete(id);
+    this.rowErrors.delete(id);
+    this.render();
+  },
+
+  applyBulk(fields) {
+    const allowed = ['category', 'fund_group_id'];
+    Object.keys(fields).filter(field => allowed.includes(field)).forEach(field => {
+      this.selectedIds.forEach(id => this.applyField(id, field, fields[field]));
+    });
+  },
+
+  toggleSelectionMode() {
+    this.selectionMode = !this.selectionMode;
+    if (!this.selectionMode) this.selectedIds.clear();
+    this.render();
+  },
+
+  toggleSelected(id) {
+    if (this.selectedIds.has(id)) this.selectedIds.delete(id);
+    else this.selectedIds.add(id);
+    this.render();
+  },
+
+  syncSheet(row) {
+    document.getElementById('mobileTxMerchant').value = row.name || '';
+    document.getElementById('mobileTxCategory').value = row.category || '';
+    document.getElementById('mobileTxFundGroup').value = row.fund_group_id ?? '';
+    document.getElementById('mobileTxAmount').value = row.amount ?? 0;
+    document.getElementById('mobileTxMemo').value = row.memo || '';
+    document.getElementById('mobileTxInstallment').value = row.installment || 1;
+    document.getElementById('mobileTxDate').value = row.date || '';
+  },
+
+  openSheet(id) {
+    const row = this.effectiveRow(id);
+    if (!row) return;
+    this.sheetTransactionId = id;
+    this.syncSheet(row);
+    document.getElementById('mobileTxEditSheet').hidden = false;
+    document.getElementById('mobileTxSheetBackdrop').hidden = false;
+    document.getElementById('mobileTxMerchant').focus();
+  },
+
+  closeSheet() {
+    this.sheetTransactionId = null;
+    document.getElementById('mobileTxEditSheet').hidden = true;
+    document.getElementById('mobileTxSheetBackdrop').hidden = true;
+  },
+
+  populateOptions() {
+    const categoryOptions = ['<option value="">미분류</option>', ...allCategories.map(category =>
+      `<option value="${escapeHtml(category)}">${escapeHtml(category)}</option>`
+    )].join('');
+    const fundOptions = ['<option value="">자금그룹 없음</option>', ...allFundGroups.map(group =>
+      `<option value="${group.id}">${escapeHtml(group.name)}</option>`
+    )].join('');
+    document.getElementById('mobileTxCategory').innerHTML = categoryOptions;
+    document.getElementById('mobileTxFundGroup').innerHTML = fundOptions;
+    document.getElementById('mobileTxBulkCategory').innerHTML = `<option value="">카테고리 일괄 변경</option>${categoryOptions}`;
+    document.getElementById('mobileTxBulkFundGroup').innerHTML = `<option value="">자금그룹 일괄 변경</option>${fundOptions}`;
+  },
+
+  statusIcons(row) {
+    const icons = [];
+    if (Number(row.linked_payment_count) > 0) icons.push('<span class="tx-link-status" role="img" aria-label="결제 메일 연결"><i class="bi bi-envelope-check" aria-hidden="true"></i></span>');
+    if (row.budget_linked) icons.push('<span class="tx-link-status" role="img" aria-label="가계부 거래 연결"><i class="bi bi-link-45deg" aria-hidden="true"></i></span>');
+    if (Number(row.category_locked) || Number(row.fund_group_locked)) icons.push('<span class="tx-manual-status" role="img" aria-label="수동 분류"><i class="bi bi-pin-angle-fill" aria-hidden="true"></i></span>');
+    return icons.join('');
+  },
+
+  render() {
+    const list = document.getElementById('mobileTxList');
+    const toggle = document.getElementById('mobileTxSelectionToggle');
+    const saveBar = document.getElementById('mobileTxSaveBar');
+    const draftCount = document.getElementById('mobileTxDraftCount');
+    const saveButton = document.getElementById('mobileTxSaveButton');
+    const bulkControls = document.getElementById('mobileTxBulkControls');
+    this.populateOptions();
+    toggle.setAttribute('aria-pressed', String(this.selectionMode));
+    toggle.textContent = this.selectionMode ? '선택 완료' : '선택';
+    bulkControls.hidden = !this.selectionMode;
+    if (!this.rows.length) {
+      list.innerHTML = '<p class="text-muted text-center py-4 mb-0">표시할 카드 거래가 없습니다.</p>';
+    } else {
+      list.innerHTML = this.rows.map(source => {
+        const row = {...source, ...(this.draftChanges.get(source.id) || {})};
+        const selected = this.selectedIds.has(row.id);
+        const error = this.rowErrors.get(row.id);
+        const fundGroup = allFundGroups.find(group => String(group.id) === String(row.fund_group_id));
+        return `<article class="mobile-tx-row ${selected ? 'is-selected' : ''}" role="listitem">
+          <div class="mobile-tx-row-main">
+            <button type="button" class="mobile-tx-open mobile-tx-touch" data-mobile-tx-open="${row.id}">
+              <span class="mobile-tx-merchant">${this.statusIcons(row)}${escapeHtml(row.name || '가맹점 없음')}</span>
+              <span class="mobile-tx-meta">${escapeHtml(row.category || '미분류')} · ${escapeHtml(fundGroup?.name || '자금그룹 없음')}</span>
+              <span class="mobile-tx-date">${escapeHtml(row.date || '')}${this.draftChanges.has(row.id) ? ' · 수정됨' : ''}</span>
+            </button>
+          </div>
+          <div class="mobile-tx-row-side">
+            ${this.selectionMode ? `<label class="mobile-tx-select"><input type="checkbox" data-mobile-tx-select="${row.id}" ${selected ? 'checked' : ''} aria-label="${escapeHtml(row.name || '거래')} 선택"></label>` : ''}
+            <strong>${fmt(row.amount || 0)}원</strong>
+          </div>
+          ${error ? `<p class="mobile-tx-error mb-0">${escapeHtml(error.error)}</p>` : ''}
+        </article>`;
+      }).join('');
+    }
+    saveBar.hidden = !this.hasUnsavedChanges() && !this.selectionMode;
+    draftCount.textContent = this.selectionMode
+      ? `${this.selectedIds.size}건 선택 · ${this.draftChanges.size}건 수정 대기`
+      : `${this.draftChanges.size}건 수정 대기`;
+    saveButton.disabled = !this.hasUnsavedChanges() || this.saving;
+    if (this.sheetTransactionId !== null) {
+      const activeRow = this.effectiveRow(this.sheetTransactionId);
+      if (activeRow) this.syncSheet(activeRow);
+    }
+  },
+
+  async save() {
+    if (!this.hasUnsavedChanges() || this.saving) return;
+    const changes = [...this.draftChanges.entries()].map(([id, fields]) => {
+      const source = this.rows.find(row => row.id === id);
+      const base = Object.fromEntries(Object.keys(fields).map(field => [field, source[field]]));
+      return {id, base, fields};
+    });
+    const linkedBudgetCount = changes.filter(change => this.rows.find(row => row.id === change.id)?.budget_linked).length;
+    if (!window.confirm(`${changes.length}건을 저장합니다. 가계부 ${linkedBudgetCount}건도 함께 반영됩니다.`)) return;
+    this.saving = true;
+    this.render();
+    try {
+      const response = await fetch('/api/card-tx/bulk', {
+        method: 'PUT',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({changes}),
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        this.rowErrors = new Map((payload.row_errors || []).map(error => [error.id, error]));
+        if (response.status === 409) document.getElementById('mobileTxStatus').textContent = '다른 변경이 있어 최신 값을 확인해주세요.';
+        else document.getElementById('mobileTxStatus').textContent = payload.error || '저장할 수 없습니다.';
+        this.render();
+        return;
+      }
+      this.draftChanges.clear();
+      this.rowErrors.clear();
+      this.selectedIds.clear();
+      this.selectionMode = false;
+      document.getElementById('mobileTxStatus').textContent = `${payload.updated}건 저장됨 · 가계부 ${payload.budget_synced}건 동기화`;
+      await txGrid.load();
+      this.render();
+    } catch (error) {
+      document.getElementById('mobileTxStatus').textContent = '네트워크 오류가 발생했습니다. 수정 내용은 유지됩니다.';
+      this.render();
+    } finally {
+      this.saving = false;
+      this.render();
+    }
+  },
+};
+
+document.getElementById('mobileTxSelectionToggle').addEventListener('click', () => mobileTxController.toggleSelectionMode());
+document.getElementById('mobileTxSaveButton').addEventListener('click', () => mobileTxController.save());
+document.getElementById('mobileTxSheetClose').addEventListener('click', () => mobileTxController.closeSheet());
+document.getElementById('mobileTxSheetBackdrop').addEventListener('click', () => mobileTxController.closeSheet());
+document.getElementById('mobileTxList').addEventListener('click', event => {
+  const open = event.target.closest('[data-mobile-tx-open]');
+  const select = event.target.closest('[data-mobile-tx-select]');
+  if (select) mobileTxController.toggleSelected(Number(select.dataset.mobileTxSelect));
+  else if (open) mobileTxController.openSheet(Number(open.dataset.mobileTxOpen));
+});
+const mobileFieldInputs = {
+  mobileTxMerchant: ['name', value => value],
+  mobileTxCategory: ['category', value => value],
+  mobileTxFundGroup: ['fund_group_id', value => value === '' ? null : Number(value)],
+  mobileTxAmount: ['amount', value => Number(value)],
+  mobileTxMemo: ['memo', value => value],
+  mobileTxInstallment: ['installment', value => Number(value)],
+  mobileTxDate: ['date', value => value],
+};
+Object.entries(mobileFieldInputs).forEach(([inputId, [field, convert]]) => {
+  document.getElementById(inputId).addEventListener('change', event => {
+    if (mobileTxController.sheetTransactionId !== null) {
+      mobileTxController.applyField(mobileTxController.sheetTransactionId, field, convert(event.target.value));
+    }
+  });
+});
+document.getElementById('mobileTxBulkCategory').addEventListener('change', event => {
+  if (event.target.value) mobileTxController.applyBulk({category: event.target.value});
+});
+document.getElementById('mobileTxBulkFundGroup').addEventListener('change', event => {
+  if (event.target.value) mobileTxController.applyBulk({fund_group_id: Number(event.target.value)});
+});
+window.addEventListener('beforeunload', event => {
+  if (!mobileTxController.hasUnsavedChanges()) return;
+  event.preventDefault();
+  event.returnValue = '';
 });
 
 // 규칙 탭 클릭 시 로드

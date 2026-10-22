@@ -347,6 +347,11 @@ body {
     box-shadow: 0 -8px 24px rgba(31, 41, 51, 0.08);
   }
 
+  .mobile-tx-save-bar[hidden],
+  .mobile-tx-bulk-controls[hidden] {
+    display: none;
+  }
+
   .mobile-tx-sheet-backdrop[hidden],
   .mobile-tx-sheet[hidden] {
     display: none;
