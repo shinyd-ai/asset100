@@ -78,6 +78,12 @@ def rows_to_list(rows):
     return [dict(r) for r in rows]
 
 
+def serialize_card_transaction(row):
+    data = dict(row)
+    data['budget_linked'] = bool(data.get('budget_id'))
+    return data
+
+
 # ── API: 수입 ────────────────────────────────────────────────
 @app.route('/api/income', methods=['GET', 'POST'])
 def api_income():
@@ -248,10 +254,12 @@ def api_card_tx():
         year    = request.args.get('year')
         month   = request.args.get('month')
         query = (
-            "SELECT t.*, c.card_name, "
+            "SELECT t.*, c.card_name, g.name AS fund_group_name, "
+            "CASE WHEN t.budget_id IS NULL THEN 0 ELSE 1 END AS budget_linked, "
             "(SELECT COUNT(*) FROM card_payment_links l WHERE l.card_tx_id = t.id) "
             "AS linked_payment_count FROM card_tx t "
-            "LEFT JOIN card_info c ON t.card_id = c.id"
+            "LEFT JOIN card_info c ON t.card_id = c.id "
+            "LEFT JOIN fund_groups g ON t.fund_group_id = g.id"
         )
         params  = []
         conds   = []
@@ -285,7 +293,7 @@ def api_card_tx():
             [{'name': n, 'total': t} for n, t in fund_map.items()],
             key=lambda x: x['total'], reverse=True
         )
-        return jsonify({'rows': rows_to_list(rows), 'total': total,
+        return jsonify({'rows': [serialize_card_transaction(row) for row in rows], 'total': total,
                         'by_category': by_category, 'by_fund_group': by_fund_group})
 
     data = request.json
@@ -1573,8 +1581,186 @@ def api_card_tx_apply_history(rid):
     return jsonify({'ok': True, 'updated': updated})
 
 
-@app.route('/api/card-tx/bulk', methods=['DELETE'])
-def api_card_tx_bulk_delete():
+_BULK_CARD_TX_FIELDS = {
+    'date', 'name', 'category', 'amount', 'installment', 'memo', 'fund_group_id',
+}
+_BUDGET_SHARED_CARD_TX_FIELDS = {'date', 'name', 'category', 'amount', 'memo'}
+
+
+def _bulk_card_tx_error(transaction_id, field, error):
+    return {'id': transaction_id, 'field': field, 'error': error}
+
+
+def validate_bulk_card_tx_changes(db, changes):
+    if not isinstance(changes, list) or not changes:
+        return [], [_bulk_card_tx_error(None, 'changes', '수정할 거래가 필요합니다.')], 400
+
+    validated = []
+    errors = []
+    seen_ids = set()
+    for change in changes:
+        if not isinstance(change, dict):
+            errors.append(_bulk_card_tx_error(None, 'change', '수정 형식이 올바르지 않습니다.'))
+            continue
+        transaction_id = change.get('id')
+        fields = change.get('fields')
+        base = change.get('base')
+        if not isinstance(transaction_id, int) or isinstance(transaction_id, bool):
+            errors.append(_bulk_card_tx_error(transaction_id, 'id', '거래 번호가 올바르지 않습니다.'))
+            continue
+        if transaction_id in seen_ids:
+            errors.append(_bulk_card_tx_error(transaction_id, 'id', '같은 거래를 두 번 수정할 수 없습니다.'))
+            continue
+        seen_ids.add(transaction_id)
+        if not isinstance(fields, dict) or not fields:
+            errors.append(_bulk_card_tx_error(transaction_id, 'fields', '변경할 값이 필요합니다.'))
+            continue
+        if not isinstance(base, dict):
+            errors.append(_bulk_card_tx_error(transaction_id, 'base', '기준 값이 필요합니다.'))
+            continue
+        unknown_fields = set(fields) - _BULK_CARD_TX_FIELDS
+        if unknown_fields:
+            errors.append(_bulk_card_tx_error(transaction_id, next(iter(unknown_fields)), '수정할 수 없는 항목입니다.'))
+            continue
+        missing_base = set(fields) - set(base)
+        if missing_base:
+            errors.append(_bulk_card_tx_error(transaction_id, next(iter(missing_base)), '기준 값이 필요합니다.'))
+            continue
+
+        row = db.execute("SELECT * FROM card_tx WHERE id = ?", (transaction_id,)).fetchone()
+        if not row:
+            errors.append(_bulk_card_tx_error(transaction_id, 'id', '거래를 찾을 수 없습니다.'))
+            continue
+
+        for field, value in fields.items():
+            if field == 'date':
+                if not isinstance(value, str):
+                    errors.append(_bulk_card_tx_error(transaction_id, field, '날짜 형식이 올바르지 않습니다.'))
+                    continue
+                try:
+                    datetime.strptime(value, '%Y-%m-%d')
+                except ValueError:
+                    errors.append(_bulk_card_tx_error(transaction_id, field, '날짜 형식이 올바르지 않습니다.'))
+            elif field in {'name', 'category', 'memo'} and not isinstance(value, str):
+                errors.append(_bulk_card_tx_error(transaction_id, field, '문자열 값이 필요합니다.'))
+            elif field == 'amount' and (not isinstance(value, int) or isinstance(value, bool)):
+                errors.append(_bulk_card_tx_error(transaction_id, field, '금액은 정수여야 합니다.'))
+            elif field == 'installment' and (
+                not isinstance(value, int) or isinstance(value, bool) or value < 1
+            ):
+                errors.append(_bulk_card_tx_error(transaction_id, field, '할부 개월 수는 1 이상이어야 합니다.'))
+            elif field == 'fund_group_id':
+                if value is not None and (not isinstance(value, int) or isinstance(value, bool)):
+                    errors.append(_bulk_card_tx_error(transaction_id, field, '자금그룹 값이 올바르지 않습니다.'))
+                elif value is not None and not db.execute(
+                    "SELECT id FROM fund_groups WHERE id = ?", (value,)
+                ).fetchone():
+                    errors.append(_bulk_card_tx_error(transaction_id, field, '자금그룹을 찾을 수 없습니다.'))
+
+        if any(error['id'] == transaction_id for error in errors):
+            continue
+        for field in fields:
+            if row[field] != base[field]:
+                errors.append(_bulk_card_tx_error(transaction_id, field, '거래가 변경되었습니다.'))
+                break
+        else:
+            validated.append({'id': transaction_id, 'fields': fields, 'base': base, 'row': row})
+
+    status_code = 409 if any(error['error'] == '거래가 변경되었습니다.' for error in errors) else 400
+    return validated, errors, status_code
+
+
+def apply_bulk_card_tx_changes(db, validated_changes):
+    updated_ids = []
+    budget_synced = 0
+    for change in validated_changes:
+        transaction_id = change['id']
+        fields = dict(change['fields'])
+        base = change['base']
+        assignments = []
+        params = []
+        for field, value in fields.items():
+            assignments.append(f"{field} = ?")
+            params.append(value)
+        if 'category' in fields:
+            assignments.append("category_locked = ?")
+            params.append(1 if fields['category'] else 0)
+        if 'fund_group_id' in fields:
+            assignments.append("fund_group_locked = ?")
+            params.append(1 if fields['fund_group_id'] is not None else 0)
+
+        conditions = ["id = ?"]
+        condition_params = [transaction_id]
+        for field in fields:
+            if base[field] is None:
+                conditions.append(f"{field} IS NULL")
+            else:
+                conditions.append(f"{field} = ?")
+                condition_params.append(base[field])
+        cursor = db.execute(
+            f"UPDATE card_tx SET {', '.join(assignments)} WHERE {' AND '.join(conditions)}",
+            [*params, *condition_params],
+        )
+        if cursor.rowcount != 1:
+            raise RuntimeError(f'conflict:{transaction_id}')
+
+        budget_fields = {field: fields[field] for field in _BUDGET_SHARED_CARD_TX_FIELDS if field in fields}
+        if change['row']['budget_id'] and budget_fields:
+            budget_assignments = ', '.join(f"{field} = ?" for field in budget_fields)
+            db.execute(
+                f"UPDATE budget SET {budget_assignments} WHERE id = ?",
+                [*budget_fields.values(), change['row']['budget_id']],
+            )
+            budget_synced += 1
+        updated_ids.append(transaction_id)
+
+    return updated_ids, budget_synced
+
+
+def api_card_tx_bulk_update():
+    db = get_db()
+    data = request.json or {}
+    validated, errors, status_code = validate_bulk_card_tx_changes(db, data.get('changes'))
+    if errors:
+        db.rollback()
+        return jsonify({'error': '저장할 수 없는 거래가 있습니다.', 'row_errors': errors}), status_code
+    try:
+        updated_ids, budget_synced = apply_bulk_card_tx_changes(db, validated)
+        db.commit()
+    except RuntimeError as error:
+        db.rollback()
+        transaction_id = int(str(error).split(':', 1)[1])
+        return jsonify({
+            'error': '저장 중 거래가 변경되었습니다.',
+            'row_errors': [_bulk_card_tx_error(transaction_id, 'transaction', '거래가 변경되었습니다.')],
+        }), 409
+    except Exception:
+        db.rollback()
+        raise
+
+    placeholders = ','.join('?' * len(updated_ids))
+    rows = db.execute(
+        "SELECT t.*, c.card_name, g.name AS fund_group_name, "
+        "CASE WHEN t.budget_id IS NULL THEN 0 ELSE 1 END AS budget_linked, "
+        "(SELECT COUNT(*) FROM card_payment_links l WHERE l.card_tx_id = t.id) "
+        "AS linked_payment_count FROM card_tx t "
+        "LEFT JOIN card_info c ON t.card_id = c.id "
+        "LEFT JOIN fund_groups g ON t.fund_group_id = g.id "
+        f"WHERE t.id IN ({placeholders}) ORDER BY t.id",
+        updated_ids,
+    ).fetchall()
+    return jsonify({
+        'ok': True,
+        'updated': len(updated_ids),
+        'budget_synced': budget_synced,
+        'rows': [serialize_card_transaction(row) for row in rows],
+    })
+
+
+@app.route('/api/card-tx/bulk', methods=['PUT', 'DELETE'])
+def api_card_tx_bulk():
+    if request.method == 'PUT':
+        return api_card_tx_bulk_update()
     data = request.json or {}
     ids  = data.get('ids', [])
     if not ids:

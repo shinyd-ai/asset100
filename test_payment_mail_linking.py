@@ -15,7 +15,8 @@ def _database():
         CREATE TABLE card_tx (
             id INTEGER PRIMARY KEY, card_id INTEGER, date TEXT, name TEXT,
             amount INTEGER, source_key TEXT, category TEXT, fund_group_id INTEGER,
-            installment INTEGER DEFAULT 1, memo TEXT
+            installment INTEGER DEFAULT 1, memo TEXT, budget_id INTEGER,
+            category_locked INTEGER DEFAULT 0, fund_group_locked INTEGER DEFAULT 0
         );
         CREATE TABLE card_payment_links (
             payment_source_key TEXT PRIMARY KEY,
@@ -45,7 +46,7 @@ def test_unknown_payment_card_does_not_fall_back_to_first_card():
 
 def test_payment_matches_statement_with_distinct_source_key():
     db = _database()
-    db.execute("INSERT INTO card_tx VALUES (944,6,'2026-09-02','쿠팡',9900,'statement-944','쇼핑',NULL,1,'')")
+    db.execute("INSERT INTO card_tx (id,card_id,date,name,amount,source_key,category,fund_group_id,installment,memo) VALUES (944,6,'2026-09-02','쿠팡',9900,'statement-944','쇼핑',NULL,1,'')")
     item = {'date': '2026-09-02', 'amount': 9900, 'name': '결제 안내',
             'source_key': 'payment-1011'}
 
@@ -57,8 +58,8 @@ def test_payment_matches_statement_with_distinct_source_key():
 
 def test_unknown_card_with_two_same_amount_candidates_stays_ambiguous():
     db = _database()
-    db.execute("INSERT INTO card_tx VALUES (1,6,'2026-09-02','상점A',9900,'statement-a','쇼핑',NULL,1,'')")
-    db.execute("INSERT INTO card_tx VALUES (2,7,'2026-09-02','상점B',9900,'statement-b','쇼핑',NULL,1,'')")
+    db.execute("INSERT INTO card_tx (id,card_id,date,name,amount,source_key,category,fund_group_id,installment,memo) VALUES (1,6,'2026-09-02','상점A',9900,'statement-a','쇼핑',NULL,1,'')")
+    db.execute("INSERT INTO card_tx (id,card_id,date,name,amount,source_key,category,fund_group_id,installment,memo) VALUES (2,7,'2026-09-02','상점B',9900,'statement-b','쇼핑',NULL,1,'')")
     item = {'date': '2026-09-02', 'amount': 9900, 'name': '결제 안내',
             'source_key': 'payment-1'}
 
@@ -67,7 +68,7 @@ def test_unknown_card_with_two_same_amount_candidates_stays_ambiguous():
 
 def test_linking_payment_preserves_statement_source_and_is_idempotent():
     db = _database()
-    db.execute("INSERT INTO card_tx VALUES (944,6,'2026-09-02','쿠팡',9900,'statement-944','쇼핑',NULL,1,'')")
+    db.execute("INSERT INTO card_tx (id,card_id,date,name,amount,source_key,category,fund_group_id,installment,memo) VALUES (944,6,'2026-09-02','쿠팡',9900,'statement-944','쇼핑',NULL,1,'')")
     item = {'date': '2026-09-02', 'amount': 9900, 'name': '결제 안내',
             'card_company': '롯데카드', 'source_key': 'payment-1011',
             'candidate_id': 'mail-1'}
@@ -85,7 +86,7 @@ def test_card_transactions_api_exposes_verified_link_count(monkeypatch):
     import app as application
 
     db = _database()
-    db.execute("INSERT INTO card_tx VALUES (944,6,'2026-09-02','쿠팡',9900,'statement-944','쇼핑',NULL,1,'')")
+    db.execute("INSERT INTO card_tx (id,card_id,date,name,amount,source_key,category,fund_group_id,installment,memo) VALUES (944,6,'2026-09-02','쿠팡',9900,'statement-944','쇼핑',NULL,1,'')")
     db.execute("INSERT INTO card_payment_links VALUES ('payment-1011',944)")
     db.commit()
     monkeypatch.setattr(application, 'database_get_db', lambda: db)
@@ -102,7 +103,7 @@ def test_legacy_mail_sync_links_payment_instead_of_adding_duplicate(monkeypatch)
     import commerce_mail_service
 
     db = _database()
-    db.execute("INSERT INTO card_tx VALUES (944,6,'2026-09-02','쿠팡',9900,'statement-944','식비',NULL,1,'')")
+    db.execute("INSERT INTO card_tx (id,card_id,date,name,amount,source_key,category,fund_group_id,installment,memo) VALUES (944,6,'2026-09-02','쿠팡',9900,'statement-944','식비',NULL,1,'')")
     db.commit()
     monkeypatch.setattr(application, 'get_db', lambda: db)
     monkeypatch.setattr(card_mail_service, 'fetch_and_sync_card_emails', lambda **kw: {
