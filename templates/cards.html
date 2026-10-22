@@ -488,7 +488,12 @@
       </div>
     </div>
     <section class="mobile-tx-workspace" aria-label="모바일 카드 거래내역">
+      <section class="mobile-tx-summary" id="mobileTxSummary" aria-label="이번 달 카드 사용">
+        <span>이번 달 카드 사용</span>
+        <strong id="mobileTxSummaryAmount">0원</strong>
+      </section>
       <div class="mobile-tx-toolbar">
+        <span id="mobileTxRowCount">거래 0건</span>
         <button type="button" class="btn btn-outline-primary mobile-tx-touch" id="mobileTxSelectionToggle" aria-pressed="false">
           선택
         </button>
@@ -889,6 +894,9 @@ const mobileTxController = {
     const draftCount = document.getElementById('mobileTxDraftCount');
     const saveButton = document.getElementById('mobileTxSaveButton');
     const bulkControls = document.getElementById('mobileTxBulkControls');
+    const summaryAmount = document.getElementById('mobileTxSummaryAmount');
+    document.getElementById('mobileTxRowCount').textContent = `거래 ${this.rows.length}건`;
+    summaryAmount.textContent = `${fmt(this.rows.reduce((total, row) => total + Number(row.amount || 0), 0))}원`;
     this.populateOptions();
     toggle.setAttribute('aria-pressed', String(this.selectionMode));
     toggle.textContent = this.selectionMode ? '선택 완료' : '선택';
@@ -904,14 +912,14 @@ const mobileTxController = {
         return `<article class="mobile-tx-row ${selected ? 'is-selected' : ''}" role="listitem">
           <div class="mobile-tx-row-main">
             <button type="button" class="mobile-tx-open mobile-tx-touch" data-mobile-tx-open="${row.id}">
-              <span class="mobile-tx-merchant">${this.statusIcons(row)}${escapeHtml(row.name || '가맹점 없음')}</span>
-              <span class="mobile-tx-meta">${escapeHtml(row.category || '미분류')} · ${escapeHtml(fundGroup?.name || '자금그룹 없음')}</span>
+              <span class="mobile-tx-merchant">${this.statusIcons(row)}<span class="mobile-tx-merchant-name">${escapeHtml(row.name || '가맹점 없음')}</span></span>
+              <span class="mobile-tx-meta"><span class="mobile-tx-chip">${escapeHtml(row.category || '미분류')}</span><span class="mobile-tx-chip mobile-tx-chip--fund">${escapeHtml(fundGroup?.name || '자금그룹 없음')}</span></span>
               <span class="mobile-tx-date">${escapeHtml(row.date || '')}${this.draftChanges.has(row.id) ? ' · 수정됨' : ''}</span>
             </button>
           </div>
           <div class="mobile-tx-row-side">
             ${this.selectionMode ? `<label class="mobile-tx-select"><input type="checkbox" data-mobile-tx-select="${row.id}" ${selected ? 'checked' : ''} aria-label="${escapeHtml(row.name || '거래')} 선택"></label>` : ''}
-            <strong>${fmt(row.amount || 0)}원</strong>
+            <strong class="mobile-tx-amount">${fmt(row.amount || 0)}원</strong>
           </div>
           ${error ? `<p class="mobile-tx-error mb-0">${escapeHtml(error.error)}</p>` : ''}
         </article>`;

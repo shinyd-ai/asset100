@@ -226,3 +226,18 @@ def test_mobile_transaction_controller_keeps_drafts_after_save_errors():
     assert 'this.rowErrors' in html
     assert 'this.draftChanges.clear()' in html
     assert 'this.render();' in html
+
+
+def test_mobile_transaction_design_uses_the_approved_finance_visual_system():
+    html = Path('templates/cards.html').read_text(encoding='utf-8')
+    css = Path('static/css/style.css').read_text(encoding='utf-8')
+
+    assert 'id="mobileTxSummary"' in html
+    assert 'mobile-tx-chip--fund' in html
+    assert 'mobile-tx-amount' in html
+    assert 'mobile-tx-status' in html
+    for color in ('#F4F6F8', '#17212B', '#126B73', '#E5F3F1', '#F5ECDF', '#E7EBEF'):
+        assert color in css
+    assert '.mobile-tx-chip--fund' in css
+    assert '.mobile-tx-merchant' in css
+    assert 'id="txDesktopTableWrap"' in html
