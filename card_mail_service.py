@@ -32,7 +32,7 @@ CARD_SENDER_HINTS = (
 )
 PAYMENT_SENDER_HINTS = (
     *CARD_SENDER_HINTS, 'easypay', 'nicepg', 'kicc', 'smartro',
-    'tosspayments', 'naver', 'coupang',
+    'tosspayments', 'naver', 'coupang', 'auction',
 )
 
 
@@ -43,6 +43,10 @@ def classify_mail_candidate(subject, sender):
     combined = f'{subject} {sender}'.lower()
     if re.match(r'^\[쿠팡\]\s+.+님 주문하신 내역을 확인해주세요\.\s*$', subject):
         return {'group': 'payment', 'type': '쿠팡 주문'}
+    if ('auction' in combined or '옥션' in sender) and any(
+        phrase in subject for phrase in ('주문해 주셔서 감사합니다', '주문해주셔서 감사합니다')
+    ):
+        return {'group': 'payment', 'type': '옥션 주문'}
 
     excluded = ('배송', '발송', '약관', '개인정보', '포인트', '광고성', '이벤트')
     if any(word in subject for word in excluded):
@@ -150,7 +154,7 @@ def _candidate_card_company(subject, sender):
     return '카드'
 
 
-def scan_mail_candidates(max_emails=50, group='statement'):
+def scan_mail_candidates(max_emails=50, group='statement', target_month=None):
     """Return header-only candidates; no body is downloaded and no flags change."""
     if group not in ('statement', 'payment'):
         return {'ok': False, 'error': '메일 종류가 올바르지 않습니다.'}
@@ -160,6 +164,10 @@ def scan_mail_candidates(max_emails=50, group='statement'):
         limit = validate_scan_limit(max_emails)
     except ValueError as exc:
         return {'ok': False, 'error': str(exc)}
+
+    target_month_str = str(target_month or '').strip()
+    if target_month_str and not re.match(r'^\d{4}-\d{2}$', target_month_str):
+        return {'ok': False, 'error': '조회 월 형식이 올바르지 않습니다. (예: 2026-10)'}
 
     mail = imaplib.IMAP4_SSL('imap.naver.com', 993)
     try:
@@ -172,7 +180,12 @@ def scan_mail_candidates(max_emails=50, group='statement'):
             if mail.select(f'"{mailbox}"', readonly=True)[0] != 'OK':
                 continue
             status, data = mail.uid('search', None, 'ALL')
-            uids = data[0].split()[-limit:] if status == 'OK' and data and data[0] else []
+            if status != 'OK' or not data or not data[0]:
+                continue
+            all_uids = data[0].split()
+            scan_count = min(len(all_uids), limit * 4 if target_month_str else limit)
+            uids = all_uids[-scan_count:]
+            box_candidates_count = 0
             for uid in reversed(uids):
                 status, parts = mail.uid(
                     'fetch', uid, '(BODY.PEEK[HEADER.FIELDS (MESSAGE-ID SUBJECT FROM DATE)])'
@@ -183,6 +196,18 @@ def scan_mail_candidates(max_emails=50, group='statement'):
                 if not raw:
                     continue
                 message = email.message_from_bytes(raw)
+                try:
+                    received_at = parsedate_to_datetime(message.get('Date')).date().isoformat()
+                except (TypeError, ValueError, OverflowError):
+                    received_at = ''
+
+                if target_month_str:
+                    if received_at:
+                        if received_at < target_month_str:
+                            break
+                        if not received_at.startswith(target_month_str):
+                            continue
+
                 subject = decode_mime_words(message.get('Subject'))
                 sender = decode_mime_words(message.get('From'))
                 classification = classify_mail_candidate(subject, sender)
@@ -192,10 +217,6 @@ def scan_mail_candidates(max_emails=50, group='statement'):
                 if fingerprint in seen_fingerprints:
                     continue
                 seen_fingerprints.add(fingerprint)
-                try:
-                    received_at = parsedate_to_datetime(message.get('Date')).date().isoformat()
-                except (TypeError, ValueError, OverflowError):
-                    received_at = ''
                 candidates.append({
                     'candidate_id': encode_mail_candidate_id(mailbox, uid.decode('ascii'), fingerprint),
                     'type': classification['type'],
@@ -206,7 +227,10 @@ def scan_mail_candidates(max_emails=50, group='statement'):
                     'mailbox': decode_imap_utf7(mailbox),
                     'checked': True,
                 })
-        return {'ok': True, 'group': group, 'count': len(candidates), 'candidates': candidates}
+                box_candidates_count += 1
+                if not target_month_str and box_candidates_count >= limit:
+                    break
+        return {'ok': True, 'group': group, 'count': len(candidates), 'candidates': candidates, 'target_month': target_month_str or None}
     except Exception:
         return {'ok': False, 'error': '메일 후보를 조회하지 못했습니다.'}
     finally:

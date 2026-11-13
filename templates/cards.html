@@ -12,7 +12,7 @@
 
 <ul class="nav card-workspace-tabs mb-4" id="cardTabs" aria-label="카드 관리 메뉴">
   <li class="nav-item"><a href="#tab-tx" class="card-workspace-nav active" data-bs-toggle="tab"><i class="bi bi-receipt" aria-hidden="true"></i><span>거래 내역</span><small>조회·분류·편집</small></a></li>
-  <li class="nav-item"><a href="#tab-mail" class="card-workspace-nav" data-bs-toggle="tab"><i class="bi bi-envelope-check text-success" aria-hidden="true"></i><span>메일 동기화</span><small>카드·쿠팡 연결</small></a></li>
+  <li class="nav-item"><a href="#tab-mail" class="card-workspace-nav" data-bs-toggle="tab"><i class="bi bi-envelope-check text-success" aria-hidden="true"></i><span>메일 동기화</span><small>카드·쇼핑몰 연결</small></a></li>
   <li class="nav-item"><a href="#tab-info" class="card-workspace-nav" data-bs-toggle="tab"><i class="bi bi-credit-card-2-front" aria-hidden="true"></i><span>카드 설정</span><small>카드 정보 관리</small></a></li>
   <li class="nav-item"><a href="#tab-excel" class="card-workspace-nav" data-bs-toggle="tab"><i class="bi bi-file-earmark-spreadsheet" aria-hidden="true"></i><span>엑셀 가져오기</span><small>명세서 업로드</small></a></li>
   <li class="nav-item"><a href="#tab-rules" class="card-workspace-nav" data-bs-toggle="tab"><i class="bi bi-magic" aria-hidden="true"></i><span>분류 규칙</span><small>자동매핑 설정</small></a></li>
@@ -341,24 +341,30 @@
   <div class="tab-pane fade" id="tab-mail">
     <div class="card border-0 shadow-sm mb-3">
       <div class="card-body row g-3 align-items-end">
-        <div class="col-md-3">
-          <label class="form-label small fw-semibold" for="mailScanCount">메일함별 최근 조회 수</label>
+        <div class="col-md-3 col-6">
+          <label class="form-label small fw-semibold" for="mailTargetMonth"><i class="bi bi-calendar3 me-1"></i>동기화 대상 월</label>
+          <select id="mailTargetMonth" class="form-select form-select-sm">
+            <option value="" selected>전체 (최근 메일)</option>
+          </select>
+        </div>
+        <div class="col-md-2 col-6">
+          <label class="form-label small fw-semibold" for="mailScanCount">최대 조회 수</label>
           <select id="mailScanCount" class="form-select form-select-sm">
             <option value="30">30개</option><option value="50" selected>50개</option>
             <option value="100">100개</option><option value="200">200개</option>
           </select>
         </div>
-        <div class="col-md-5">
+        <div class="col-md-4 col-12">
           <label class="form-label small fw-semibold" for="mailPassword6">보안명세서 암호 <span class="text-muted fw-normal">(선택)</span></label>
-          <input type="password" id="mailPassword6" class="form-control form-control-sm" maxlength="10" autocomplete="off">
+          <input type="password" id="mailPassword6" class="form-control form-control-sm" maxlength="10" autocomplete="off" placeholder="생년월일 6자리">
         </div>
-        <div class="col-md-4 small text-muted"><i class="bi bi-shield-check text-success me-1"></i>목록 조회 시 본문·첨부파일을 열지 않습니다.</div>
+        <div class="col-md-3 col-12 small text-muted"><i class="bi bi-shield-check text-success me-1"></i>목록 조회 시 본문·첨부파일을 열지 않습니다.</div>
       </div>
     </div>
 
     {% for group, title, scan_id, import_id, body_id in [
       ('statement', '① 카드사 명세서', 'btnScanStatements', 'btnImportStatements', 'statementCandidateBody'),
-      ('payment', '② 결제·취소·쿠팡 주문', 'btnScanPayments', 'btnImportPayments', 'paymentCandidateBody')
+      ('payment', '② 결제·취소·쇼핑몰 주문(쿠팡·옥션)', 'btnScanPayments', 'btnImportPayments', 'paymentCandidateBody')
     ] %}
     <div class="card border-0 shadow-sm mb-3">
       <div class="card-header bg-white d-flex flex-wrap gap-2 justify-content-between align-items-center">
@@ -1826,7 +1832,7 @@ function renderMailCandidates(group) {
     <tr data-candidate-id="${escapeHtml(item.candidate_id)}">
       <td><input type="checkbox" class="candidate-checkbox" data-group="${group}" data-index="${index}" ${selectable ? 'checked' : 'disabled'} aria-label="이 메일 선택"></td>
       <td>${escapeHtml(item.date || '-')}</td>
-      <td><span class="badge ${item.type === '취소' ? 'text-bg-warning' : item.type === '쿠팡 주문' ? 'text-bg-info' : 'text-bg-secondary'}">${escapeHtml(item.type)}</span></td>
+      <td><span class="badge ${item.type === '취소' ? 'text-bg-warning' : (item.type === '쿠팡 주문' || item.type === '옥션 주문') ? 'text-bg-info' : 'text-bg-secondary'}">${escapeHtml(item.type)}</span></td>
       <td>${escapeHtml(item.card_company || '카드')}</td>
       <td><span title="${escapeHtml(item.sender || '')}">${escapeHtml(item.subject || '-')}</span>${detail}</td>
       <td class="candidate-result text-muted">${group === 'payment' ? escapeHtml({matched:'매칭', unmatched:'미매칭', ambiguous:'보류', parse_failed:'파싱 실패'}[item.match_status] || '대기') : '대기'}</td>
@@ -1857,19 +1863,45 @@ function renderMailTransactionResults(group, data) {
     </tr>`).join('') : '<tr><td colspan="6" class="text-center text-muted py-3">추출된 거래가 없습니다. 위 후보 목록에서 파싱 실패 항목을 확인해주세요.</td></tr>';
 }
 
+function initMailTargetMonth() {
+  const select = document.getElementById('mailTargetMonth');
+  if (!select) return;
+  const now = new Date();
+  for (let i = 0; i < 12; i++) {
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    const yyyy = d.getFullYear();
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    const val = `${yyyy}-${mm}`;
+    const label = i === 0 ? `${val} (이번 달)` : (i === 1 ? `${val} (지난 달)` : `${val}`);
+    const opt = document.createElement('option');
+    opt.value = val;
+    opt.textContent = label;
+    select.appendChild(opt);
+  }
+}
+initMailTargetMonth();
+
 async function scanMailCandidates(group) {
   const el = mailGroupElements(group);
   el.scan.disabled = true; el.import.disabled = true;
-  el.status.textContent = '메일 제목과 발신자를 조회하고 있습니다...';
+  const targetMonth = document.getElementById('mailTargetMonth')?.value || '';
+  el.status.textContent = (targetMonth ? `[${targetMonth}] ` : '') + '메일 제목과 발신자를 조회하고 있습니다...';
   try {
     const res = await fetch('/api/card-tx/mail-candidates', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({group, max_emails: Number(document.getElementById('mailScanCount').value)})
+      body: JSON.stringify({
+        group,
+        max_emails: Number(document.getElementById('mailScanCount').value),
+        target_month: targetMonth
+      })
     });
     const data = await res.json();
     if (!res.ok || !data.ok) throw new Error(data.error || '메일 목록 조회 실패');
     mailCandidates[group] = data.candidates || [];
     renderMailCandidates(group);
+    if (targetMonth) {
+      el.status.textContent = `[${targetMonth}] 대상 메일 ${mailCandidates[group].length}건이 조회되었습니다.`;
+    }
   } catch (error) {
     el.status.textContent = error.message;
   } finally { el.scan.disabled = false; }

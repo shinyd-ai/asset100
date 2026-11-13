@@ -735,7 +735,8 @@ def _mail_item_already_imported(db, item, card_id, claimed_legacy_ids):
 def _mail_transaction_memo(item):
     """Keep installment purchase details visible in the transaction memo."""
     if item.get('product_summary'):
-        return f"[쿠팡] {str(item['product_summary']).strip()}"
+        vendor = item.get('vendor') or '쿠팡'
+        return f"[{vendor}] {str(item['product_summary']).strip()}"
     if item.get('card_company') == '삼성카드' and item.get('original_date'):
         parts = [f"원거래일 {item['original_date']}"]
         if item.get('installment_number') and item.get('installment'):
@@ -912,7 +913,7 @@ def _payment_preview(db, candidates, parsed_items, orders):
             match_status=match['status'], matched_transaction=match['transaction'],
             original_transaction=None, date=order.get('order_date'),
             card_company=order.get('card_company') or candidate.get('card_company'),
-            name=f"쿠팡 - {order.get('product_summary') or '상품정보 없음'}",
+            name=f"{order.get('vendor', '쿠팡')} - {order.get('product_summary') or '상품정보 없음'}",
             amount=order.get('total_amount'),
         )
     return candidates
@@ -966,7 +967,7 @@ def _link_selected_payments(db, selected, parsed_items, orders):
             'candidate_id': order.get('candidate_id'),
             'date': order.get('order_date'),
             'card_company': order.get('card_company') or '카드',
-            'name': f"쿠팡 - {order.get('product_summary') or '상품정보 없음'}",
+            'name': f"{order.get('vendor', '쿠팡')} - {order.get('product_summary') or '상품정보 없음'}",
             'amount': order.get('total_amount'), 'status': label,
             'subject': order.get('subject') or '', **match,
         })
@@ -1051,7 +1052,8 @@ def api_card_tx_mail_candidates():
         max_emails = validate_scan_limit(data.get('max_emails', 50))
     except ValueError as exc:
         return jsonify({'ok': False, 'error': str(exc)}), 400
-    result = scan_mail_candidates(max_emails=max_emails, group=group)
+    target_month = (data.get('target_month') or '').strip() or None
+    result = scan_mail_candidates(max_emails=max_emails, group=group, target_month=target_month)
     if result.get('ok') and group == 'payment':
         selected = [row['candidate_id'] for row in result.get('candidates', [])]
         if selected:
@@ -1233,7 +1235,7 @@ def api_card_tx_approve_unmatched_mail():
                     'candidate_id': order.get('candidate_id'),
                     'date': order.get('order_date'),
                     'card_company': order.get('card_company'),
-                    'name': '쿠팡',
+                    'name': order.get('vendor') or '쿠팡',
                     'product_summary': order.get('product_summary'),
                     'amount': order.get('total_amount'), 'installment': 1,
                     'source_key': order.get('source_key'),
